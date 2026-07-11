@@ -27,15 +27,19 @@ export async function benchmarkProxyThroughput(
     maximumBytes: bytes + 64 * 1024,
   });
   if (response.statusCode !== 200) throw new Error(`Speed probe returned HTTP ${response.statusCode}`);
-  if (response.body.length !== bytes) {
-    throw new Error(`Speed probe returned ${response.body.length} of ${bytes} bytes`);
+  const received = response.body.length;
+  // Public proxies occasionally truncate or slightly pad a transfer. Tolerate a
+  // small shortfall and measure throughput on the bytes actually delivered
+  // rather than discarding an otherwise usable exit over an exact-length check.
+  if (received < bytes * 0.9) {
+    throw new Error(`Speed probe returned only ${received} of ${bytes} bytes`);
   }
-  const throughputMbps = megabitsPerSecond(response.body.length, response.elapsedMs);
+  const throughputMbps = megabitsPerSecond(received, response.elapsedMs);
   if (throughputMbps <= 0) throw new Error("Speed probe did not produce a usable measurement");
   return {
     ...proxy,
     throughputMbps,
-    speedTestBytes: response.body.length,
+    speedTestBytes: received,
     speedTestMs: response.elapsedMs,
   };
 }
@@ -79,8 +83,15 @@ export async function probeBrowserReadiness(proxy, { timeoutMs = 7_000 } = {}) {
       maximumBytes: 64 * 1024,
     }),
   ]);
-  if (google.statusCode !== 204) throw new Error(`Google readiness probe returned HTTP ${google.statusCode}`);
-  if (example.statusCode !== 200) throw new Error(`Independent readiness probe returned HTTP ${example.statusCode}`);
+  // The point of this stage is only to confirm the exit reaches independent
+  // HTTPS hosts, not to assert exact status codes. generate_204 normally answers
+  // 204 but some proxies rewrite it to 200; accept any non-error response.
+  if (google.statusCode !== 204 && google.statusCode !== 200) {
+    throw new Error(`Google readiness probe returned HTTP ${google.statusCode}`);
+  }
+  if (example.statusCode >= 400) {
+    throw new Error(`Independent readiness probe returned HTTP ${example.statusCode}`);
+  }
   return {
     browserReady: true,
     browserProbeMs: Math.max(google.elapsedMs, example.elapsedMs),
