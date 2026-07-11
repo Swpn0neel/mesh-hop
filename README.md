@@ -8,8 +8,8 @@ MeshHop is a desktop app that automatically discovers working **public proxies**
 
 MeshHop ships as a self-contained Tauri 2 desktop application. Installed users do **not** need Node.js, npm, Rust, or a terminal.
 
-- Windows installer (NSIS): [`MeshHop_0.2.7_x64-setup.exe`](release/MeshHop_0.2.7_x64-setup.exe)
-- Windows MSI (managed/silent deploy): [`MeshHop_0.2.7_x64_en-US.msi`](release/MeshHop_0.2.7_x64_en-US.msi)
+- Windows installer (NSIS): [`MeshHop_0.2.8_x64-setup.exe`](release/MeshHop_0.2.8_x64-setup.exe)
+- Windows MSI (managed/silent deploy): [`MeshHop_0.2.8_x64_en-US.msi`](release/MeshHop_0.2.8_x64_en-US.msi)
 
 Firefox must be installed — MeshHop opens an isolated, proxied Firefox profile with the bundled uBlock Origin extension.
 

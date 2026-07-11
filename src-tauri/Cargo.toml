@@ -1,6 +1,6 @@
 [package]
 name = "meshhop-desktop"
-version = "0.2.7"
+version = "0.2.8"
 description = "Automatic public proxy discovery and browser routing"
 authors = ["MeshHop"]
 edition = "2021"
