@@ -3,7 +3,6 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 import { redirectHttpRequestToHttps } from "./http-upgrade.js";
 import { parseConnectAuthority } from "./net-policy.js";
-import { launchProxiedBrowser } from "./public/browser.js";
 import { PublicProxyPool } from "./public/pool.js";
 import { DEFAULT_SOURCE_URLS, proxyKey } from "./public/sources.js";
 import { connectViaProxy } from "./public/tunnel.js";
@@ -265,7 +264,7 @@ async function main() {
   }
   const app = await startPublicMode(options);
   if (process.env.AUTO_LAUNCH_BROWSER !== "0") {
-    launchProxiedBrowser({ proxyPort: app.proxyPort, controlPort: app.controlPort });
+    console.log("Browser auto-launch is disabled in CLI mode. Please configure your browser manually.");
   }
 }
 

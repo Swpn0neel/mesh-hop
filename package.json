@@ -1,20 +1,10 @@
 {
   "name": "meshhop",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Tauri desktop app for automatic regional proxy discovery and browser routing",
   "private": true,
   "type": "module",
-  "bin": {
-    "meshhop-pair": "src/pair.js",
-    "meshhop-coordinator": "src/coordinator.js",
-    "meshhop-client": "src/client.js",
-    "meshhop-exit": "src/exit.js"
-  },
   "scripts": {
-    "pair": "node src/pair.js",
-    "coordinator": "node src/coordinator.js",
-    "client": "node src/client.js",
-    "exit": "node src/exit.js",
     "public": "node src/public.js",
     "public:check": "node src/public.js --check",
     "sidecar:build": "node scripts/build-sidecar.mjs",
@@ -25,16 +15,14 @@
     "desktop:dev": "npm run sidecar:build && tauri dev",
     "desktop:build": "npm run sidecar:build && tauri build",
     "desktop:build:debug": "npm run sidecar:build && tauri build --debug",
-    "test": "node --test test/crypto.test.js test/net-policy.test.js test/coordinator.test.js test/public.test.js",
-    "test:live": "node --test test/live.test.js",
+    "test": "node --test test/net-policy.test.js test/public.test.js",
     "test:public": "node --test test/public-live.test.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "ipaddr.js": "^2.2.0",
-    "ws": "^8.18.3"
+    "ipaddr.js": "^2.2.0"
   },
   "devDependencies": {
     "@tauri-apps/api": "^2.11.1",

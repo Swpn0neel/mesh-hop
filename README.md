@@ -6,8 +6,8 @@ MeshHop is a small, consent-based HTTPS relay for pairing one browser with one t
 
 MeshHop now ships as a self-contained Tauri 2 desktop application. Installed users do not need Node.js, npm, Rust, a terminal, or manual browser proxy settings.
 
-- Recommended Windows installer: [`MeshHop_0.2.6_x64-setup.exe`](release/MeshHop_0.2.6_x64-setup.exe)
-- Enterprise-style MSI: [`MeshHop_0.2.6_x64_en-US.msi`](release/MeshHop_0.2.6_x64_en-US.msi)
+- Recommended Windows installer: [`MeshHop_0.2.7_x64-setup.exe`](release/MeshHop_0.2.7_x64-setup.exe)
+- Enterprise-style MSI: [`MeshHop_0.2.7_x64_en-US.msi`](release/MeshHop_0.2.7_x64_en-US.msi)
 
 Inside the app:
 
