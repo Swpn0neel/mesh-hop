@@ -146,14 +146,27 @@ fn process_engine_line(
             }
         }
         "ready" => {
+            let status = parsed.get("status");
+            let has_exit = status
+                .and_then(|value| value.get("current"))
+                .map(|current| !current.is_null())
+                .unwrap_or(false);
+            let country = status
+                .and_then(|value| value.get("country"))
+                .and_then(Value::as_str)
+                .unwrap_or("selected");
             let mut inner = runtime.lock();
             if inner.generation == generation {
                 inner.phase = "running".into();
-                inner.message = "US exit is active".into();
+                inner.message = if has_exit {
+                    format!("{country} exit is active")
+                } else {
+                    "No working exit yet — use Refresh to try again".into()
+                };
             }
             drop(inner);
             emit_state(app, runtime);
-            if let Some(status) = parsed.get("status") {
+            if let Some(status) = status {
                 let _ = app.emit("pool-updated", status.clone());
             }
         }

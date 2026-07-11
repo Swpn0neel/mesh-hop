@@ -107,7 +107,14 @@ export async function startPublicMode({
     autoFallback,
     logger,
   });
-  await pool.refresh();
+  // A transient source outage or an unlucky sample should not prevent the app
+  // from starting. Come up with an empty pool the user can retry from the
+  // control UI rather than crashing the engine on the very first refresh.
+  try {
+    await pool.refresh();
+  } catch (error) {
+    logger.warn?.(`Initial proxy discovery failed; starting with an empty pool. ${error.message}`);
+  }
   const openSockets = new Set();
 
   const proxyServer = http.createServer((request, response) => {

@@ -9,6 +9,7 @@ import { megabitsPerSecond, parseCloudflareTrace } from "../src/public/probe.js"
 import { parseProxyLines } from "../src/public/sources.js";
 import { PublicProxyPool, uniqueExitIps } from "../src/public/pool.js";
 import { connectViaProxy } from "../src/public/tunnel.js";
+import { startPublicMode } from "../src/public.js";
 
 async function listen(server) {
   server.listen(0, "127.0.0.1");
@@ -178,6 +179,29 @@ test("HTTP CONNECT upstream creates a working tunnel", async () => {
   } finally {
     tunnel?.destroy();
     await close(proxyServer);
+  }
+});
+
+test("startPublicMode survives a failed initial discovery and starts empty", async () => {
+  const warnings = [];
+  const logger = { info() {}, warn: (message) => warnings.push(message), error() {} };
+  const app = await startPublicMode({
+    // A refused loopback source makes the first discovery fail without any
+    // outbound network access.
+    sourceUrls: ["http://127.0.0.1:1/none"],
+    listenPort: 0,
+    controlPort: 0,
+    refreshMinutes: 60,
+    logger,
+  });
+  try {
+    assert.equal(app.pool.current, null);
+    assert.equal(app.pool.status().proxies.length, 0);
+    assert.ok(warnings.some((message) => /Initial proxy discovery failed/.test(message)));
+    const status = await fetch(`http://127.0.0.1:${app.controlPort}/api/status`).then((r) => r.json());
+    assert.equal(status.proxies.length, 0);
+  } finally {
+    await app.close();
   }
 });
 
