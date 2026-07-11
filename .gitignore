@@ -1,0 +1,9 @@
+node_modules/
+.env
+*.log
+.meshhop/
+desktop-dist/
+desktop-engine-build/
+src-tauri/target/
+src-tauri/binaries/*.exe
+src-tauri/binaries/meshhop-engine-*
