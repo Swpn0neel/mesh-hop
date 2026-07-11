@@ -181,6 +181,51 @@ test("HTTP CONNECT upstream creates a working tunnel", async () => {
   }
 });
 
+test("SOCKS5 encodes an IPv4 literal target as an address, not a hostname", async () => {
+  let request;
+  const proxyServer = net.createServer((socket) => {
+    let stage = 0;
+    socket.on("data", (data) => {
+      if (stage === 0) {
+        stage = 1;
+        socket.write(Buffer.from([0x05, 0x00]));
+      } else if (stage === 1) {
+        request = data;
+        stage = 2;
+        socket.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0]));
+      } else {
+        socket.write(data);
+      }
+    });
+  });
+  const port = await listen(proxyServer);
+  let tunnel;
+  try {
+    tunnel = await connectViaProxy({ protocol: "socks5", host: "127.0.0.1", port }, "203.0.113.7", 443);
+    // VER, CMD, RSV, ATYP=0x01 (IPv4), then the four address octets and port.
+    assert.deepEqual(request.subarray(0, 4), Buffer.from([0x05, 0x01, 0x00, 0x01]));
+    assert.deepEqual(request.subarray(4, 8), Buffer.from([203, 0, 113, 7]));
+    assert.equal(request.readUInt16BE(8), 443);
+  } finally {
+    tunnel?.destroy();
+    await close(proxyServer);
+  }
+});
+
+test("an expired connect deadline rejects without leaking an errored socket", async () => {
+  // Bind then immediately release a loopback port so connections to it are
+  // refused. With the previous code, an already-expired deadline created a
+  // socket with no error listener; the refused connection then surfaced as an
+  // uncaught 'error' that crashed the engine. A clean rejection is expected.
+  const placeholder = net.createServer();
+  const port = await listen(placeholder);
+  await close(placeholder);
+  await assert.rejects(
+    () => connectViaProxy({ protocol: "http", host: "127.0.0.1", port }, "example.com", 443, 0),
+    /timed out/,
+  );
+});
+
 test("unauthenticated SOCKS5 upstream creates a working tunnel", async () => {
   const proxyServer = net.createServer((socket) => {
     let stage = 0;

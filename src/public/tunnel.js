@@ -1,5 +1,21 @@
 import net from "node:net";
 import tls from "node:tls";
+import ipaddr from "ipaddr.js";
+
+// Build the SOCKS5 address portion (ATYP + address) for a target host. IPv4 and
+// IPv6 literals are encoded as their native address types; anything else is sent
+// as a domain name for the proxy to resolve.
+function socks5Address(host) {
+  if (net.isIPv4(host)) {
+    return Buffer.from([0x01, ...ipaddr.parse(host).toByteArray()]);
+  }
+  if (net.isIPv6(host)) {
+    return Buffer.from([0x04, ...ipaddr.parse(host).toByteArray()]);
+  }
+  const domain = Buffer.from(host, "utf8");
+  if (domain.length > 255) throw new Error("Destination hostname is too long for SOCKS5");
+  return Buffer.from([0x03, domain.length, ...domain]);
+}
 
 class SocketReader {
   constructor(socket) {
@@ -98,8 +114,17 @@ function remaining(deadline) {
 
 function openTcp(host, port, deadline) {
   return new Promise((resolve, reject) => {
+    // Compute the budget before creating the socket. If the deadline has already
+    // passed, reject without ever opening a connection: a socket created here
+    // would have no error listener and no timeout, leaking the descriptor and
+    // (on a refused connection) crashing the engine with an uncaught 'error'.
+    const timeLeft = deadline - Date.now();
+    if (timeLeft <= 0) {
+      reject(new Error("Proxy connection timed out"));
+      return;
+    }
     const socket = net.createConnection({ host, port });
-    const timer = setTimeout(() => socket.destroy(new Error("Proxy TCP connection timed out")), remaining(deadline));
+    const timer = setTimeout(() => socket.destroy(new Error("Proxy TCP connection timed out")), timeLeft);
     socket.once("connect", () => {
       clearTimeout(timer);
       socket.setNoDelay(true);
@@ -113,6 +138,10 @@ function openTcp(host, port, deadline) {
 }
 
 async function wrapProxyTls(socket, proxy, deadline) {
+  // Same guard as openTcp: never start a TLS handshake we have no time budget
+  // for, so the tls.Socket below always has its error listener attached.
+  const timeLeft = deadline - Date.now();
+  if (timeLeft <= 0) throw new Error("Proxy connection timed out");
   return await new Promise((resolve, reject) => {
     const secure = tls.connect({
       socket,
@@ -120,7 +149,7 @@ async function wrapProxyTls(socket, proxy, deadline) {
       rejectUnauthorized: false,
       ALPNProtocols: ["http/1.1"],
     });
-    const timer = setTimeout(() => secure.destroy(new Error("TLS proxy handshake timed out")), remaining(deadline));
+    const timer = setTimeout(() => secure.destroy(new Error("TLS proxy handshake timed out")), timeLeft);
     secure.once("secureConnect", () => {
       clearTimeout(timer);
       resolve(secure);
@@ -135,8 +164,10 @@ async function wrapProxyTls(socket, proxy, deadline) {
 async function httpConnectOnSocket(socket, targetHost, targetPort, deadline) {
   const reader = new SocketReader(socket);
   try {
+    // IPv6 literals must be bracketed in the request-target and Host header.
+    const authorityHost = net.isIPv6(targetHost) ? `[${targetHost}]` : targetHost;
     socket.write(
-      `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\nProxy-Connection: keep-alive\r\nUser-Agent: MeshHop-Public/0.2\r\n\r\n`,
+      `CONNECT ${authorityHost}:${targetPort} HTTP/1.1\r\nHost: ${authorityHost}:${targetPort}\r\nProxy-Connection: keep-alive\r\nUser-Agent: MeshHop-Public/0.2\r\n\r\n`,
     );
     const header = await reader.readUntil(Buffer.from("\r\n\r\n"), 16 * 1024, remaining(deadline));
     const statusLine = header.toString("latin1").split("\r\n", 1)[0];
@@ -183,12 +214,11 @@ async function connectSocks5(proxy, targetHost, targetPort, deadline) {
       throw new Error("SOCKS5 proxy does not permit unauthenticated access");
     }
 
-    const domain = Buffer.from(targetHost, "utf8");
-    if (domain.length > 255) throw new Error("Destination hostname is too long for SOCKS5");
-    const request = Buffer.alloc(7 + domain.length);
-    request.set([0x05, 0x01, 0x00, 0x03, domain.length], 0);
-    domain.copy(request, 5);
-    request.writeUInt16BE(targetPort, 5 + domain.length);
+    const address = socks5Address(targetHost);
+    const request = Buffer.alloc(3 + address.length + 2);
+    request.set([0x05, 0x01, 0x00], 0);
+    address.copy(request, 3);
+    request.writeUInt16BE(targetPort, 3 + address.length);
     socket.write(request);
 
     const response = await reader.readBytes(4, remaining(deadline));
@@ -266,7 +296,10 @@ export async function httpsGetViaProxy(
   { host, path = "/", timeoutMs = 7_000, maximumBytes = 256 * 1024 } = {},
 ) {
   const started = performance.now();
-  const tunnel = await connectViaProxy(proxy, host, 443, timeoutMs);
+  // A single wall-clock budget covers the proxy tunnel, TLS handshake, and the
+  // HTTP exchange, so a slow proxy cannot spend timeoutMs on each stage in turn.
+  const deadline = Date.now() + timeoutMs;
+  const tunnel = await connectViaProxy(proxy, host, 443, Math.max(1, deadline - Date.now()));
   const secure = tls.connect({
     socket: tunnel,
     servername: host,
@@ -277,7 +310,10 @@ export async function httpsGetViaProxy(
   const raw = await new Promise((resolve, reject) => {
     const chunks = [];
     let bytes = 0;
-    const timer = setTimeout(() => secure.destroy(new Error("HTTPS probe timed out")), timeoutMs);
+    const timer = setTimeout(
+      () => secure.destroy(new Error("HTTPS probe timed out")),
+      Math.max(1, deadline - Date.now()),
+    );
     secure.once("secureConnect", () => {
       secure.write(
         `GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: MeshHop-Public/0.2\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
