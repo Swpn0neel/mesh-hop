@@ -1,9 +1,8 @@
 import { domainToASCII } from "node:url";
-import dns from "node:dns/promises";
 import net from "node:net";
 import ipaddr from "ipaddr.js";
 
-export function normalizeDomain(value) {
+function validateDnsHost(value, { minLabels }) {
   if (typeof value !== "string") throw new Error("Destination host is missing");
   const withoutDot = value.trim().replace(/\.$/, "");
   const ascii = domainToASCII(withoutDot).toLowerCase();
@@ -13,7 +12,7 @@ export function normalizeDomain(value) {
 
   const labels = ascii.split(".");
   if (
-    labels.length < 2 ||
+    labels.length < minLabels ||
     labels.some(
       (label) =>
         !label ||
@@ -28,39 +27,21 @@ export function normalizeDomain(value) {
   return ascii;
 }
 
-export function parseAllowlist(value = "") {
-  const rules = [];
-  for (const rawRule of value.split(",").map((item) => item.trim()).filter(Boolean)) {
-    const suffixRule = rawRule.startsWith("*.");
-    const domain = normalizeDomain(suffixRule ? rawRule.slice(2) : rawRule);
-    rules.push({ type: suffixRule ? "suffix" : "exact", domain });
-  }
-  return rules;
+// Registrable DNS hostnames only (at least two labels); rejects IP literals.
+// Used for the plain-HTTP -> HTTPS upgrade path.
+export function normalizeDomain(value) {
+  return validateDnsHost(value, { minLabels: 2 });
 }
 
-export function isDomainAllowed(host, rules, allowAllPublicHttps = false) {
-  const domain = normalizeDomain(host);
-  if (allowAllPublicHttps) return true;
-
-  return rules.some((rule) => {
-    if (rule.type === "exact") return domain === rule.domain;
-    return domain === rule.domain || domain.endsWith(`.${rule.domain}`);
-  });
-}
-
-export function validateDestination(
-  host,
-  port,
-  { rules = [], allowAllPublicHttps = false } = {},
-) {
-  const domain = normalizeDomain(host);
-  if (Number(port) !== 443) {
-    throw new Error("Only HTTPS destinations on port 443 are allowed");
+// A browser may CONNECT to an IP literal or a single-label intranet host as well
+// as an ordinary hostname. IP literals pass through unchanged; everything else is
+// validated as a DNS hostname, allowing a single label.
+export function normalizeConnectHost(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (net.isIP(trimmed)) return trimmed.toLowerCase();
   }
-  if (!isDomainAllowed(domain, rules, allowAllPublicHttps)) {
-    throw new Error(`The exit operator has not allowed ${domain}`);
-  }
-  return { host: domain, port: 443 };
+  return validateDnsHost(value, { minLabels: 1 });
 }
 
 export function isPublicAddress(address) {
@@ -72,30 +53,28 @@ export function isPublicAddress(address) {
   return parsed.range() === "unicast";
 }
 
-export async function resolvePublicAddresses(host, lookup = dns.lookup) {
-  const addresses = await lookup(host, { all: true, verbatim: true });
-  if (!Array.isArray(addresses) || addresses.length === 0) {
-    throw new Error("Destination did not resolve to an address");
-  }
-  if (addresses.some(({ address }) => !isPublicAddress(address))) {
-    throw new Error("Destination resolved to a private or reserved address");
-  }
-
-  return [
-    ...new Map(
-      addresses.map(({ address, family }) => [address, { address, family: Number(family) }]),
-    ).values(),
-  ];
-}
-
 export function parseConnectAuthority(authority) {
   if (typeof authority !== "string" || authority.length > 300) {
     throw new Error("CONNECT destination is malformed");
   }
-  const lastColon = authority.lastIndexOf(":");
-  if (lastColon <= 0) throw new Error("CONNECT destination must include a port");
-  const host = authority.slice(0, lastColon);
-  const portText = authority.slice(lastColon + 1);
+  let host;
+  let portText;
+  if (authority.startsWith("[")) {
+    // Bracketed IPv6 literal: [addr]:port
+    const end = authority.indexOf("]");
+    if (end <= 1) throw new Error("CONNECT destination is malformed");
+    host = authority.slice(1, end);
+    const rest = authority.slice(end + 1);
+    if (!rest.startsWith(":")) throw new Error("CONNECT destination must include a port");
+    portText = rest.slice(1);
+  } else {
+    const lastColon = authority.lastIndexOf(":");
+    if (lastColon <= 0) throw new Error("CONNECT destination must include a port");
+    host = authority.slice(0, lastColon);
+    portText = authority.slice(lastColon + 1);
+  }
   if (!/^\d+$/.test(portText)) throw new Error("CONNECT port is invalid");
-  return { host: normalizeDomain(host), port: Number(portText) };
+  const port = Number(portText);
+  if (port < 1 || port > 65535) throw new Error("CONNECT port is invalid");
+  return { host: normalizeConnectHost(host), port };
 }
