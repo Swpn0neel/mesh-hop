@@ -1,21 +1,33 @@
 # MeshHop security model
 
-MeshHop is a private, consent-based relay. It is intentionally not an open proxy.
+MeshHop routes a dedicated browser profile through **free, unauthenticated public proxies** that it discovers, verifies, and ranks automatically. Understand the trust model before using it.
 
-The separate **Public mode** intentionally consumes published unauthenticated HTTP, HTTPS, SOCKS4, and SOCKS5 proxies. It keeps the local listener on loopback, accepts HTTPS `CONNECT` traffic only, and never disables the browser's destination-certificate validation. The public proxy can observe destination domains, IPs, timing, and traffic volume. Never accept a browser certificate warning: that would allow interception of the HTTPS session.
+## What MeshHop does and does not protect
 
-- A 256-bit pair code authenticates exactly one client and one exit. Treat it like a password.
-- The coordinator receives only a derived room identifier, a derived authentication token, and encrypted binary frames. The pair secret is never sent to it.
-- Frame contents use AES-256-GCM. The browser's HTTPS session remains encrypted end-to-end between the browser and destination website inside that encrypted relay.
-- The local proxy listens on loopback by default.
-- The exit accepts DNS hostnames on port 443 only. It rejects IP literals and any DNS response containing a private, loopback, link-local, carrier-grade NAT, multicast, or reserved address.
-- The exit requires an operator-defined domain allowlist unless the operator explicitly enables all public HTTPS destinations.
-- Connection and byte-rate limits protect the exit operator from accidental overuse.
+- The local proxy listens on **loopback only** (`127.0.0.1`) and accepts HTTPS `CONNECT` traffic on port **443 only**. Plain-HTTP requests are answered with a `308` upgrade to HTTPS rather than being proxied in cleartext.
+- MeshHop **never disables the browser's destination-certificate validation.** Your browser's HTTPS session stays encrypted end-to-end between the browser and the destination website, even as it passes through the public proxy. When MeshHop connects to a proxy's own TLS front door it does not validate that front-door certificate, but this never affects the inner, browser-to-website TLS session.
+- **The public proxy is an untrusted intermediary.** Its operator can observe destination domains (via SNI and the `CONNECT` target), connection timing, and traffic volume. HTTPS hides page *contents*, not *who you talk to*.
+- **Never accept a certificate warning** in the proxied browser. Doing so would let a malicious proxy intercept the HTTPS session. A correctly working public proxy never triggers such a warning.
 
-## Important boundaries
+## Verification and rotation
 
-The exit operator controls the public IP and remains responsible for traffic leaving it. Run an exit only for a person you trust and only with the network owner's informed consent. HTTPS protects page contents, but the exit operator can still observe destination domains, timing, and traffic volume.
+MeshHop reduces (but cannot eliminate) exposure to broken or hostile proxies by:
 
-This MVP does not provide forward secrecy beyond HTTPS itself, coordinator federation, anonymous discovery, payments, reputation scoring, or formal protocol review. Do not use it for secrets or high-risk activity until the protocol has received independent security review.
+- Testing a randomized sample of published candidates rather than trusting the lists.
+- Confirming the observed exit country and public IP through an end-to-end HTTPS request before use.
+- Requiring finalists to work against multiple independent HTTPS hosts, and deduplicating by observed exit IP.
+- Keeping a browser on one authoritative exit until three consecutive tunnel failures, a manual rotation, or a pool refresh — so a single page load does not silently span two different IPs.
 
-Report vulnerabilities privately to the project owner; do not test against exits or networks you do not own or have permission to use.
+## Bundled extension integrity
+
+The dedicated Firefox profile installs the Mozilla-signed uBlock Origin 1.72.2 XPI. Its SHA-256 is pinned and verified at build time (`npm run browser-assets:verify`); a mismatch fails the build.
+
+## Limitations
+
+- Many public exits are datacenter IPs that strict websites already classify as proxies. MeshHop automates testing and failover but **cannot guarantee** a given address is unflagged.
+- This tool provides **no anonymity**, no forward secrecy beyond HTTPS itself, and has not had independent security review. Do not use it for secrets or high-risk activity.
+- Only your browser's traffic is routed, and only if that browser is configured (or launched by MeshHop) to use the loopback proxy. Other applications are unaffected and may leak your real IP.
+
+## Reporting
+
+Report vulnerabilities privately to the project owner. Do not test against proxies or networks you do not own or have permission to use.

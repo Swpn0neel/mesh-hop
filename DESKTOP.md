@@ -7,16 +7,16 @@ The desktop package uses Tauri 2.11, a vanilla Vite frontend, and the existing J
 For ordinary Windows installation, use the NSIS setup executable:
 
 ```text
-src-tauri/target/release/bundle/nsis/MeshHop_0.2.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/MeshHop_0.2.7_x64-setup.exe
 ```
 
 The MSI package is also available for managed or silent deployment:
 
 ```text
-src-tauri/target/release/bundle/msi/MeshHop_0.2.0_x64_en-US.msi
+src-tauri/target/release/bundle/msi/MeshHop_0.2.7_x64_en-US.msi
 ```
 
-Both packages include the proxy engine. Node.js and Rust are not required on the installed computer. Chrome or Edge is required for the dedicated proxied browser profile.
+Both packages include the proxy engine. Node.js and Rust are not required on the installed computer. Mozilla Firefox is required for the dedicated proxied browser profile (MeshHop installs the bundled uBlock Origin extension into an isolated Firefox profile).
 
 These personal development builds are unsigned. Windows SmartScreen may therefore display an unknown-publisher warning. Production distribution should Authenticode-sign the sidecar, Tauri executable, and installer with a trusted code-signing certificate.
 
@@ -34,7 +34,7 @@ Verified public HTTP/HTTPS/SOCKS exit
 Destination website
 ```
 
-The Rust layer selects unused loopback ports, supervises the child process, requests status/rotate/refresh actions from its loopback control endpoint, and opens a dedicated browser profile. The WebView never receives shell permissions.
+The Rust layer uses fixed loopback ports (17877 for the browser proxy, 17878 for control) so an already-open Firefox profile stays valid across restarts, supervises the child process, requests status/rotate/refresh actions from its loopback control endpoint, and opens a dedicated Firefox profile. The WebView never receives shell permissions.
 
 ## Development
 
