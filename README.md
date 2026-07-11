@@ -11,7 +11,7 @@ MeshHop ships as a self-contained Tauri 2 desktop application. Installed users d
 - Windows installer (NSIS): [`MeshHop_0.2.8_x64-setup.exe`](release/MeshHop_0.2.8_x64-setup.exe)
 - Windows MSI (managed/silent deploy): [`MeshHop_0.2.8_x64_en-US.msi`](release/MeshHop_0.2.8_x64_en-US.msi)
 
-Firefox must be installed — MeshHop opens an isolated, proxied Firefox profile with the bundled uBlock Origin extension.
+Firefox is recommended — MeshHop opens an isolated, proxied Firefox profile with the bundled uBlock Origin extension. If Firefox isn't installed, it falls back to Chrome, Chromium, or Edge with a proxied, isolated profile (without uBlock Origin).
 
 Inside the app:
 

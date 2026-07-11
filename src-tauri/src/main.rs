@@ -437,7 +437,92 @@ fn firefox_binary() -> Option<PathBuf> {
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn firefox_binary() -> Option<PathBuf> {
-    None
+    first_existing(vec![
+        ("Firefox", PathBuf::from("/usr/bin/firefox")),
+        ("Firefox", PathBuf::from("/usr/bin/firefox-esr")),
+        ("Firefox", PathBuf::from("/snap/bin/firefox")),
+    ])
+    .map(|(_, path)| path)
+}
+
+// A Chromium-family fallback (Chrome, Chromium, or Edge) for users without
+// Firefox. It gets a proxied, isolated profile but not the bundled uBlock Origin,
+// which ships as a Firefox XPI.
+#[cfg(target_os = "windows")]
+fn chromium_binary() -> Option<(&'static str, PathBuf)> {
+    let program_files = env::var_os("ProgramFiles").map(PathBuf::from);
+    let program_files_x86 = env::var_os("ProgramFiles(x86)").map(PathBuf::from);
+    let local = env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    first_existing(vec![
+        (
+            "Google Chrome",
+            program_files
+                .clone()
+                .unwrap_or_default()
+                .join("Google/Chrome/Application/chrome.exe"),
+        ),
+        (
+            "Google Chrome",
+            program_files_x86
+                .clone()
+                .unwrap_or_default()
+                .join("Google/Chrome/Application/chrome.exe"),
+        ),
+        (
+            "Google Chrome",
+            local
+                .unwrap_or_default()
+                .join("Google/Chrome/Application/chrome.exe"),
+        ),
+        (
+            "Microsoft Edge",
+            program_files_x86
+                .unwrap_or_default()
+                .join("Microsoft/Edge/Application/msedge.exe"),
+        ),
+        (
+            "Microsoft Edge",
+            program_files
+                .unwrap_or_default()
+                .join("Microsoft/Edge/Application/msedge.exe"),
+        ),
+    ])
+}
+
+#[cfg(target_os = "macos")]
+fn chromium_binary() -> Option<(&'static str, PathBuf)> {
+    first_existing(vec![
+        (
+            "Google Chrome",
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        ),
+        (
+            "Chromium",
+            PathBuf::from("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ),
+        (
+            "Microsoft Edge",
+            PathBuf::from("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+        ),
+    ])
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn chromium_binary() -> Option<(&'static str, PathBuf)> {
+    first_existing(vec![
+        ("Google Chrome", PathBuf::from("/usr/bin/google-chrome")),
+        ("Chromium", PathBuf::from("/usr/bin/chromium")),
+        ("Chromium", PathBuf::from("/usr/bin/chromium-browser")),
+        ("Microsoft Edge", PathBuf::from("/usr/bin/microsoft-edge")),
+    ])
+}
+
+fn meshhop_data_root() -> PathBuf {
+    env::var_os("LOCALAPPDATA")
+        .or_else(|| env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(".").to_path_buf())
+        .join("MeshHop")
 }
 
 fn prepare_firefox_profile(app: &AppHandle, profile: &Path, proxy_port: u16) -> Result<(), String> {
@@ -502,26 +587,45 @@ fn open_browser(app: AppHandle, state: State<'_, AppState>) -> Result<String, St
             .proxy_port
             .ok_or_else(|| "Proxy port is unavailable".to_string())?
     };
-    let executable = firefox_binary().ok_or_else(|| {
-        "Firefox is required for the protected MeshHop profile with uBlock Origin, but it was not found".to_string()
-    })?;
-    let profile_root = env::var_os("LOCALAPPDATA")
-        .or_else(|| env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(".").to_path_buf())
-        .join("MeshHop/FirefoxProfile-v2");
-    prepare_firefox_profile(&app, &profile_root, proxy_port)?;
+    // Prefer Firefox, which gets the full hardened profile with bundled uBlock
+    // Origin. Fall back to a Chromium-family browser (proxied, isolated profile,
+    // but no uBlock) so users without Firefox can still route their traffic.
+    if let Some(executable) = firefox_binary() {
+        let profile_root = meshhop_data_root().join("FirefoxProfile-v2");
+        prepare_firefox_profile(&app, &profile_root, proxy_port)?;
+        ProcessCommand::new(executable)
+            .args([
+                "-no-remote".into(),
+                "-profile".into(),
+                profile_root.display().to_string(),
+                "https://ipwho.is/".into(),
+            ])
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok("Opened dedicated Firefox with uBlock Origin".into());
+    }
 
-    ProcessCommand::new(executable)
-        .args([
-            "-no-remote".into(),
-            "-profile".into(),
-            profile_root.display().to_string(),
-            "https://ipwho.is/".into(),
-        ])
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    Ok("Opened dedicated Firefox with uBlock Origin".into())
+    if let Some((name, executable)) = chromium_binary() {
+        let profile_root = meshhop_data_root().join("ChromiumProfile");
+        fs::create_dir_all(&profile_root).map_err(|error| error.to_string())?;
+        ProcessCommand::new(executable)
+            .args([
+                format!("--user-data-dir={}", profile_root.display()),
+                format!("--proxy-server=http://127.0.0.1:{proxy_port}"),
+                "--no-first-run".into(),
+                "--no-default-browser-check".into(),
+                "--disable-quic".into(),
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into(),
+                "https://ipwho.is/".into(),
+            ])
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(format!(
+            "Opened dedicated {name} (install Firefox for the bundled uBlock Origin profile)"
+        ));
+    }
+
+    Err("No supported browser found. Install Firefox for the full MeshHop profile with uBlock Origin, or Chrome, Chromium, or Edge for a basic proxied profile.".into())
 }
 
 fn main() {

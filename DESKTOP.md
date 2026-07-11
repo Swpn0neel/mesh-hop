@@ -16,7 +16,7 @@ The MSI package is also available for managed or silent deployment:
 src-tauri/target/release/bundle/msi/MeshHop_0.2.7_x64_en-US.msi
 ```
 
-Both packages include the proxy engine. Node.js and Rust are not required on the installed computer. Mozilla Firefox is required for the dedicated proxied browser profile (MeshHop installs the bundled uBlock Origin extension into an isolated Firefox profile).
+Both packages include the proxy engine. Node.js and Rust are not required on the installed computer. Mozilla Firefox is recommended for the dedicated proxied browser profile (MeshHop installs the bundled uBlock Origin extension into an isolated Firefox profile). If Firefox is not present, MeshHop falls back to Chrome, Chromium, or Edge with a proxied, isolated profile (without uBlock Origin).
 
 These personal development builds are unsigned. Windows SmartScreen may therefore display an unknown-publisher warning. Production distribution should Authenticode-sign the sidecar, Tauri executable, and installer with a trusted code-signing certificate.
 
