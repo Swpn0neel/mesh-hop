@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import http from "node:http";
 import { pathToFileURL } from "node:url";
+import { booleanEnv, integerEnv } from "./env.js";
 import { redirectHttpRequestToHttps } from "./http-upgrade.js";
 import { parseConnectAuthority } from "./net-policy.js";
 import { PublicProxyPool } from "./public/pool.js";
@@ -221,12 +222,6 @@ export async function startPublicMode({
   };
 }
 
-function integerEnv(name, fallback) {
-  const value = Number(process.env[name] ?? fallback);
-  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
-  return value;
-}
-
 async function main() {
   const sourceUrls = process.env.SOURCE_URLS
     ? process.env.SOURCE_URLS.split(",").map((value) => value.trim()).filter(Boolean)
@@ -234,8 +229,8 @@ async function main() {
   const options = {
     country: process.env.COUNTRY ?? "US",
     sourceUrls,
-    listenPort: integerEnv("LISTEN_PORT", 7777),
-    controlPort: integerEnv("CONTROL_PORT", 7778),
+    listenPort: integerEnv("LISTEN_PORT", 7777, { minimum: 0 }),
+    controlPort: integerEnv("CONTROL_PORT", 7778, { minimum: 0 }),
     maxCandidates: integerEnv("MAX_CANDIDATES", 160),
     probeConcurrency: integerEnv("PROBE_CONCURRENCY", 40),
     probeTimeoutMs: integerEnv("PROBE_TIMEOUT_MS", 7000),
@@ -243,7 +238,7 @@ async function main() {
     rankMode: process.env.RANK_MODE ?? "balanced",
     connectTimeoutMs: integerEnv("CONNECT_TIMEOUT_MS", 5000),
     maxAttempts: integerEnv("MAX_ATTEMPTS", 3),
-    autoFallback: !new Set(["0", "false", "no", "off"]).has(String(process.env.AUTO_FALLBACK ?? "1").toLowerCase()),
+    autoFallback: booleanEnv("AUTO_FALLBACK", true),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
   };
 
@@ -262,10 +257,8 @@ async function main() {
     console.log(JSON.stringify(pool.status(), null, 2));
     return;
   }
-  const app = await startPublicMode(options);
-  if (process.env.AUTO_LAUNCH_BROWSER !== "0") {
-    console.log("Browser auto-launch is disabled in CLI mode. Please configure your browser manually.");
-  }
+  await startPublicMode(options);
+  console.log("CLI mode does not launch a browser. Point your browser's proxy at the address above.");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
