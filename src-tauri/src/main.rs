@@ -395,7 +395,9 @@ async fn rotate_exit(state: State<'_, AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 async fn refresh_exits(state: State<'_, AppState>) -> Result<Value, String> {
-    post_control(&state, "refresh", 90).await
+    // Steady-state speed measurement with a second confirming sample makes a full
+    // refresh take longer; allow generous headroom before the request times out.
+    post_control(&state, "refresh", 180).await
 }
 
 fn first_existing(candidates: Vec<(&'static str, PathBuf)>) -> Option<(&'static str, PathBuf)> {

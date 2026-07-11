@@ -1,5 +1,5 @@
 import { isPublicAddress } from "../net-policy.js";
-import { httpsGetViaProxy } from "./tunnel.js";
+import { httpsGetViaProxy, measureDownloadThroughput } from "./tunnel.js";
 
 export function parseCloudflareTrace(text) {
   const values = {};
@@ -18,29 +18,18 @@ export function megabitsPerSecond(bytes, elapsedMs) {
 
 export async function benchmarkProxyThroughput(
   proxy,
-  { bytes = 256 * 1024, timeoutMs = 8_000 } = {},
+  { timeoutMs = 12_000, warmupMs, measureMs } = {},
 ) {
-  const response = await httpsGetViaProxy(proxy, {
-    host: "speed.cloudflare.com",
-    path: `/__down?bytes=${bytes}`,
-    timeoutMs,
-    maximumBytes: bytes + 64 * 1024,
-  });
-  if (response.statusCode !== 200) throw new Error(`Speed probe returned HTTP ${response.statusCode}`);
-  const received = response.body.length;
-  // Public proxies occasionally truncate or slightly pad a transfer. Tolerate a
-  // small shortfall and measure throughput on the bytes actually delivered
-  // rather than discarding an otherwise usable exit over an exact-length check.
-  if (received < bytes * 0.9) {
-    throw new Error(`Speed probe returned only ${received} of ${bytes} bytes`);
-  }
-  const throughputMbps = megabitsPerSecond(received, response.elapsedMs);
-  if (throughputMbps <= 0) throw new Error("Speed probe did not produce a usable measurement");
+  // Measure sustained bandwidth over a steady-state window (handshake and
+  // TCP slow-start excluded) instead of dividing a tiny payload by a time that
+  // is dominated by connection setup.
+  const result = await measureDownloadThroughput(proxy, { timeoutMs, warmupMs, measureMs });
   return {
     ...proxy,
-    throughputMbps,
-    speedTestBytes: received,
-    speedTestMs: response.elapsedMs,
+    throughputMbps: result.throughputMbps,
+    ttfbMs: result.ttfbMs,
+    speedSampleBytes: result.sampleBytes,
+    speedWindowMs: result.windowMs,
   };
 }
 

@@ -18,7 +18,7 @@
     "lint": "eslint .",
     "version:sync": "node scripts/sync-version.mjs",
     "version:check": "node scripts/sync-version.mjs --check",
-    "test": "node --test test/env.test.js test/http-upgrade.test.js test/net-policy.test.js test/public.test.js",
+    "test": "node --test test/env.test.js test/http-upgrade.test.js test/net-policy.test.js test/public.test.js test/throughput.test.js",
     "test:public": "node --test test/public-live.test.js"
   },
   "engines": {

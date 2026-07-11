@@ -65,18 +65,25 @@ export function compareProxyQuality(left, right, mode = "balanced") {
     if (!Number.isFinite(throughput) || throughput <= 0) return 60_000;
     return (transferMegabits / throughput) * 1_000;
   };
-  const performanceScore = (proxy, transferMegabits) =>
-    Number(proxy.latencyMs || 0) + transferCost(proxy, transferMegabits);
+  // Penalize exits whose two throughput samples disagree (erratic speed). The
+  // score is in millisecond-equivalent units; a fully inconsistent exit adds
+  // `weight` ms. Absent consistency (before the confirmation stage) is neutral.
+  const instabilityPenalty = (proxy, weight) => {
+    const consistency = Number.isFinite(proxy.speedConsistency) ? proxy.speedConsistency : 1;
+    return (1 - Math.min(1, Math.max(0, consistency))) * weight;
+  };
+  const performanceScore = (proxy, transferMegabits, instabilityWeight) =>
+    Number(proxy.latencyMs || 0) + transferCost(proxy, transferMegabits) + instabilityPenalty(proxy, instabilityWeight);
 
   // Approximate the time to establish the route and transfer a representative page-sized payload.
-  if (mode === "speed") return performanceScore(left, 8) - performanceScore(right, 8);
+  if (mode === "speed") return performanceScore(left, 8, 700) - performanceScore(right, 8, 700);
   if (mode === "consumer") {
     const tier = { "consumer-likely": 0, unknown: 1, "hosting-likely": 2 };
     const difference = (tier[left.network?.kind] ?? 1) - (tier[right.network?.kind] ?? 1);
-    return difference || performanceScore(left, 2) - performanceScore(right, 2);
+    return difference || performanceScore(left, 2, 400) - performanceScore(right, 2, 400);
   }
   const penalty = { "consumer-likely": 0, unknown: 600, "hosting-likely": 1600 };
-  const leftScore = performanceScore(left, 3) + (penalty[left.network?.kind] ?? penalty.unknown);
-  const rightScore = performanceScore(right, 3) + (penalty[right.network?.kind] ?? penalty.unknown);
+  const leftScore = performanceScore(left, 3, 800) + (penalty[left.network?.kind] ?? penalty.unknown);
+  const rightScore = performanceScore(right, 3, 800) + (penalty[right.network?.kind] ?? penalty.unknown);
   return leftScore - rightScore;
 }

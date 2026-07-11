@@ -1,12 +1,35 @@
 import { EventEmitter } from "node:events";
 import { compareProxyQuality, enrichProxyNetworks } from "./network.js";
 import { benchmarkProxyThroughput, mapConcurrent, probeBrowserReadiness, probeProxy } from "./probe.js";
+import { measureDownloadThroughput } from "./tunnel.js";
 import {
   DEFAULT_SOURCE_URLS,
   fetchPublicProxyCandidates,
   proxyKey,
   shuffledSample,
 } from "./sources.js";
+
+// The steady-state throughput probe needs room for the handshake plus the full
+// warm-up and measurement window, independent of the shorter per-request probe
+// timeout used for lightweight checks.
+const SPEED_TIMEOUT_MS = 12_000;
+
+// Combine one or more throughput samples (Mbps) into a single conservative
+// figure plus a consistency score in [0, 1] (min/max of the samples). A single
+// sample is reported as-is with a neutral 1 consistency. Pure and testable.
+export function combineThroughputSamples(samples) {
+  const valid = (Array.isArray(samples) ? samples : []).filter(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  if (valid.length === 0) return { throughputMbps: 0, consistency: 0 };
+  const min = Math.min(...valid);
+  const max = Math.max(...valid);
+  const mean = valid.reduce((sum, value) => sum + value, 0) / valid.length;
+  return {
+    throughputMbps: Math.round(mean * 100) / 100,
+    consistency: valid.length < 2 ? 1 : Math.round((min / max) * 100) / 100,
+  };
+}
 
 export class PublicProxyPool extends EventEmitter {
   constructor({
@@ -18,6 +41,7 @@ export class PublicProxyPool extends EventEmitter {
     poolSize = 8,
     rankMode = "balanced",
     autoFallback = true,
+    minThroughputMbps = 2,
     logger = console,
   } = {}) {
     super();
@@ -27,6 +51,7 @@ export class PublicProxyPool extends EventEmitter {
     this.concurrency = concurrency;
     this.probeTimeoutMs = probeTimeoutMs;
     this.poolSize = poolSize;
+    this.minThroughputMbps = Number(minThroughputMbps) || 0;
     if (!new Set(["speed", "balanced", "consumer"]).has(rankMode)) {
       throw new Error("RANK_MODE must be speed, balanced, or consumer");
     }
@@ -38,6 +63,11 @@ export class PublicProxyPool extends EventEmitter {
     this.refreshing = null;
     this.lastRefresh = null;
     this.sourceCount = 0;
+  }
+
+  #speedTimeoutMs() {
+    // Allow for the proxy handshake on top of the fixed warm-up + measurement window.
+    return Math.max(SPEED_TIMEOUT_MS, this.probeTimeoutMs + 5_000);
   }
 
   async refresh() {
@@ -81,17 +111,13 @@ export class PublicProxyPool extends EventEmitter {
       // Published lists frequently contain many ports that all lead to the same
       // egress address. Measure diverse exits, not duplicate front doors.
       const speedCandidates = uniqueExitIps(firstPass).slice(0, Math.max(this.poolSize * 4, 24));
-      const payloadBytes = this.rankMode === "speed" ? 256 * 1024 : 128 * 1024;
       this.logger.info?.(
-        `Measuring sustained throughput on the ${speedCandidates.length} strongest candidates (${Math.round(payloadBytes / 1024)} KiB each)...`,
+        `Measuring sustained throughput on the ${speedCandidates.length} strongest candidates (steady-state window)...`,
       );
       const benchmarked = await mapConcurrent(
         speedCandidates,
         Math.min(this.concurrency, 8),
-        (proxy) => benchmarkProxyThroughput(proxy, {
-          bytes: payloadBytes,
-          timeoutMs: Math.max(8_000, this.probeTimeoutMs),
-        }),
+        (proxy) => benchmarkProxyThroughput(proxy, { timeoutMs: this.#speedTimeoutMs() }),
         (proxy, count) => this.logger.info?.(
           `  speed ${count}. ${proxyKey(proxy)} -> ${proxy.throughputMbps} Mbps`,
         ),
@@ -99,8 +125,18 @@ export class PublicProxyPool extends EventEmitter {
       if (benchmarked.length === 0) {
         throw new Error("Responsive proxies failed the sustained throughput test; refresh to sample another set");
       }
-      benchmarked.sort((left, right) => compareProxyQuality(left, right, this.rankMode));
-      const confirmationCandidates = benchmarked.slice(0, Math.max(this.poolSize * 3, this.poolSize));
+      // Enforce a usable-speed floor. Prioritizing speed means dropping exits
+      // measured below the floor, but never emptying the pool over it: if no exit
+      // clears the bar we keep the fastest available and warn.
+      const fastEnough = benchmarked.filter((proxy) => proxy.throughputMbps >= this.minThroughputMbps);
+      const ranked = fastEnough.length > 0 ? fastEnough : benchmarked;
+      if (this.minThroughputMbps > 0 && fastEnough.length < benchmarked.length) {
+        this.logger.info?.(
+          `${fastEnough.length}/${benchmarked.length} exits cleared the ${this.minThroughputMbps} Mbps floor`,
+        );
+      }
+      ranked.sort((left, right) => compareProxyQuality(left, right, this.rankMode));
+      const confirmationCandidates = ranked.slice(0, Math.max(this.poolSize * 3, this.poolSize));
       this.logger.info?.(`Confirming the ${confirmationCandidates.length} best candidates across independent HTTPS hosts...`);
       const firstByKey = new Map(confirmationCandidates.map((proxy) => [proxyKey(proxy), proxy]));
       const confirmed = await mapConcurrent(
@@ -109,16 +145,26 @@ export class PublicProxyPool extends EventEmitter {
         async (proxy) => {
           // A browser opens several unrelated TLS tunnels at once. Require that behavior here,
           // rather than admitting exits which only work against the location-test host.
-          const [second, readiness] = await Promise.all([
+          // A second throughput sample lets us report a stable, conservative
+          // bandwidth number and flag exits whose speed is erratic.
+          const [second, readiness, reSample] = await Promise.all([
             probeProxy(proxy, {
               country: this.country,
               timeoutMs: this.probeTimeoutMs,
             }),
             probeBrowserReadiness(proxy, { timeoutMs: this.probeTimeoutMs }),
+            measureDownloadThroughput(proxy, { timeoutMs: this.#speedTimeoutMs() }).catch(() => null),
           ]);
+          const samples = [proxy.throughputMbps, reSample?.throughputMbps].filter(
+            (value) => Number.isFinite(value) && value > 0,
+          );
+          const combined = combineThroughputSamples(samples);
           return {
             ...second,
             ...readiness,
+            throughputMbps: combined.throughputMbps,
+            speedConsistency: combined.consistency,
+            throughputSamples: samples.length,
             latencyMs: Math.round((proxy.latencyMs + second.latencyMs) / 2),
             firstLatencyMs: firstByKey.get(proxyKey(proxy)).latencyMs,
           };

@@ -93,6 +93,7 @@ export async function startPublicMode({
   connectTimeoutMs = 5_000,
   maxAttempts = 3,
   autoFallback = true,
+  minThroughputMbps = 2,
   refreshMinutes = 10,
   logger = console,
 } = {}) {
@@ -105,6 +106,7 @@ export async function startPublicMode({
     poolSize,
     rankMode,
     autoFallback,
+    minThroughputMbps,
     logger,
   });
   // A transient source outage or an unlucky sample should not prevent the app
@@ -246,6 +248,7 @@ async function main() {
     connectTimeoutMs: integerEnv("CONNECT_TIMEOUT_MS", 5000),
     maxAttempts: integerEnv("MAX_ATTEMPTS", 3),
     autoFallback: booleanEnv("AUTO_FALLBACK", true),
+    minThroughputMbps: integerEnv("MIN_THROUGHPUT_MBPS", 2, { minimum: 0 }),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
   };
 
@@ -259,6 +262,7 @@ async function main() {
       poolSize: options.poolSize,
       rankMode: options.rankMode,
       autoFallback: options.autoFallback,
+      minThroughputMbps: options.minThroughputMbps,
     });
     await pool.refresh();
     console.log(JSON.stringify(pool.status(), null, 2));

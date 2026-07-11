@@ -353,3 +353,138 @@ export async function httpsGetViaProxy(
     elapsedMs: Math.round(performance.now() - started),
   };
 }
+
+// Steady-state download rate (Mbps) from a series of cumulative byte readings,
+// where each reading is { tMs, bytes } and tMs is milliseconds since the first
+// body byte arrived. The rate is measured over a window that begins after a
+// warm-up period (so TCP slow-start does not drag the number down) and spans up
+// to measureMs. If the transfer ended before the warm-up completed, the whole
+// transfer is used as a fallback. Pure and deterministic: unit-testable without
+// a socket. Returns 0 when there is not enough signal to measure.
+export function windowedThroughputMbps(readings, { warmupMs = 400, measureMs = 2_500 } = {}) {
+  if (!Array.isArray(readings) || readings.length < 2) return 0;
+  const first = readings[0];
+  const last = readings[readings.length - 1];
+
+  let start = readings.find((reading) => reading.tMs >= warmupMs);
+  let end = null;
+  if (start) {
+    const target = start.tMs + measureMs;
+    for (const reading of readings) {
+      if (reading.tMs >= start.tMs && reading.tMs <= target) end = reading;
+    }
+  }
+  // Fallback: warm-up consumed the whole (short) transfer, so measure end to end.
+  if (!start || !end || end.tMs <= start.tMs) {
+    start = first;
+    end = last;
+  }
+
+  const seconds = (end.tMs - start.tMs) / 1_000;
+  const bits = (end.bytes - start.bytes) * 8;
+  if (seconds <= 0 || bits <= 0) return 0;
+  return Math.round((bits / seconds / 1_000_000) * 100) / 100;
+}
+
+const SPEED_REQUEST_BYTES = 64 * 1024 * 1024; // Upper bound; the transfer is aborted once the window closes.
+const SPEED_WARMUP_MS = 400;
+const SPEED_MEASURE_MS = 2_500;
+
+// Measure sustained download throughput through the proxy against Cloudflare's
+// speed endpoint. Unlike a fixed-size probe timed from before the handshake,
+// this streams a large payload and times only the transfer window, so the result
+// reflects real bandwidth rather than connection setup latency.
+export async function measureDownloadThroughput(
+  proxy,
+  {
+    host = "speed.cloudflare.com",
+    requestBytes = SPEED_REQUEST_BYTES,
+    warmupMs = SPEED_WARMUP_MS,
+    measureMs = SPEED_MEASURE_MS,
+    timeoutMs = 12_000,
+  } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  const tunnel = await connectViaProxy(proxy, host, 443, Math.max(1, deadline - Date.now()));
+  const secure = tls.connect({
+    socket: tunnel,
+    servername: host,
+    rejectUnauthorized: true,
+    ALPNProtocols: ["http/1.1"],
+  });
+
+  return await new Promise((resolve, reject) => {
+    let headerBuffer = Buffer.alloc(0);
+    let headersDone = false;
+    let statusCode = 0;
+    let requestSentAt = 0;
+    let firstBodyAt = 0;
+    let ttfbMs = 0;
+    let bodyBytes = 0;
+    const readings = [];
+    let settled = false;
+
+    // On deadline, measure from whatever was transferred rather than discarding a
+    // slow-but-working exit; the guards in finish() reject only if too little
+    // arrived to measure at all.
+    const timer = setTimeout(() => finish(), Math.max(1, deadline - Date.now()));
+
+    function finish(error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      secure.destroy();
+      if (error) return reject(error);
+      if (statusCode !== 200) return reject(new Error(`Speed probe returned HTTP ${statusCode || "?"}`));
+      if (readings.length < 2) return reject(new Error("Speed probe did not transfer enough data to measure"));
+      const throughputMbps = windowedThroughputMbps(readings, { warmupMs, measureMs });
+      if (throughputMbps <= 0) return reject(new Error("Speed probe did not produce a usable measurement"));
+      resolve({
+        throughputMbps,
+        ttfbMs,
+        sampleBytes: bodyBytes,
+        windowMs: Math.round(readings[readings.length - 1].tMs),
+      });
+    }
+
+    secure.once("secureConnect", () => {
+      requestSentAt = performance.now();
+      secure.write(
+        `GET /__down?bytes=${requestBytes} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: MeshHop-Public/0.2\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
+      );
+    });
+
+    secure.on("data", (chunk) => {
+      let bodyChunk = chunk;
+      if (!headersDone) {
+        headerBuffer = Buffer.concat([headerBuffer, chunk]);
+        const headerEnd = headerBuffer.indexOf("\r\n\r\n");
+        if (headerEnd === -1) {
+          if (headerBuffer.length > 32 * 1024) finish(new Error("Speed probe returned oversized headers"));
+          return;
+        }
+        const headerText = headerBuffer.toString("latin1", 0, headerEnd);
+        const match = /^HTTP\/1\.[01] (\d{3})/i.exec(headerText);
+        statusCode = match ? Number(match[1]) : 0;
+        if (statusCode !== 200) return finish();
+        headersDone = true;
+        bodyChunk = headerBuffer.subarray(headerEnd + 4);
+        headerBuffer = Buffer.alloc(0);
+      }
+
+      if (bodyChunk.length === 0) return;
+      const now = performance.now();
+      if (firstBodyAt === 0) {
+        firstBodyAt = now;
+        ttfbMs = Math.round(now - requestSentAt);
+      }
+      bodyBytes += bodyChunk.length;
+      const tMs = now - firstBodyAt;
+      readings.push({ tMs, bytes: bodyBytes });
+      if (tMs >= warmupMs + measureMs) finish();
+    });
+
+    secure.once("end", () => finish());
+    secure.once("error", (error) => finish(error));
+  });
+}

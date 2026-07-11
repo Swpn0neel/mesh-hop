@@ -45,6 +45,7 @@ async function main() {
     connectTimeoutMs: integerEnv("CONNECT_TIMEOUT_MS", 5000),
     maxAttempts: integerEnv("MAX_ATTEMPTS", 3),
     autoFallback: booleanEnv("AUTO_FALLBACK", true),
+    minThroughputMbps: integerEnv("MIN_THROUGHPUT_MBPS", 2, { minimum: 0 }),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
     logger,
   };

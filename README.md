@@ -36,8 +36,8 @@ MeshHop then:
 1. Downloads current published proxy candidates for the chosen country from [Proxifly](https://github.com/proxifly/free-proxy-list) and [IPLocate](https://github.com/iplocate/free-proxy-list) (HTTP, HTTPS, SOCKS4, SOCKS5).
 2. Tests a randomized sample concurrently instead of trusting the lists.
 3. Verifies the observed exit country and IP through an end-to-end HTTPS request to Cloudflare's trace endpoint.
-4. Measures sustained throughput, looks up ASN/ISP (via `ipwho.is`), classifies consumer vs. hosting networks, and confirms finalists across independent HTTPS hosts.
-5. Starts a sticky local proxy, keeps distinct verified fallbacks, and refreshes every ten minutes. A browser stays on one authoritative exit until three consecutive tunnel failures, a manual rotation, or a pool refresh changes it.
+4. Measures download speed over a steady-state window — skipping the initial warm-up so connect/handshake overhead and TCP slow-start don't skew the result — takes a second confirming sample per exit and scores its speed consistency, then looks up ASN/ISP (via `ipwho.is`), classifies consumer vs. hosting networks, and confirms finalists across independent HTTPS hosts.
+5. Ranks candidates by sustained speed and consistency (erratic exits are penalized), starts a sticky local proxy, keeps distinct verified fallbacks, and refreshes every ten minutes. A browser stays on one authoritative exit until three consecutive tunnel failures, a manual rotation, or a pool refresh changes it.
 
 The control/status page opens at `http://127.0.0.1:7778` with **Rotate IP** and **Find fresh proxies** buttons. The local browser proxy is `http://127.0.0.1:7777`.
 
@@ -61,6 +61,7 @@ npm run public:check
 | `PROBE_CONCURRENCY` | `40` | Parallel probes. |
 | `PROBE_TIMEOUT_MS` | `7000` | Per-probe timeout. |
 | `POOL_SIZE` | `8` | Verified exits to retain. |
+| `MIN_THROUGHPUT_MBPS` | `2` | Drop exits measured below this sustained speed (kept as best-effort if none clear it). `0` disables the floor. |
 | `CONNECT_TIMEOUT_MS` | `5000` | Tunnel connect timeout. |
 | `MAX_ATTEMPTS` | `3` | Tunnel attempts before failing a request. |
 | `AUTO_FALLBACK` | `1` | Set to `0` to keep a single exit and never auto-rotate on failure. |
