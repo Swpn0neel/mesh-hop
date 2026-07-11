@@ -17,6 +17,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run version:check
 
   test:
     name: Unit tests (Node ${{ matrix.node-version }})
@@ -33,3 +34,33 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  rust:
+    name: Rust lint (fmt + clippy)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # generate_context! requires the frontend dist and the sidecar binary to
+      # exist at build time. Build the (cheap) frontend and drop a placeholder
+      # sidecar so clippy can compile without the full 91 MB Node SEA build.
+      - run: npm ci
+      - run: npm run desktop:frontend
+      - name: Create placeholder sidecar
+        shell: bash
+        run: |
+          triple=$(rustc --print host-tuple)
+          : > "src-tauri/binaries/meshhop-engine-${triple}.exe"
+      - name: rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+      - name: clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings

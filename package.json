@@ -16,6 +16,8 @@
     "desktop:build": "npm run sidecar:build && tauri build",
     "desktop:build:debug": "npm run sidecar:build && tauri build --debug",
     "lint": "eslint .",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/sync-version.mjs --check",
     "test": "node --test test/env.test.js test/net-policy.test.js test/public.test.js",
     "test:public": "node --test test/public-live.test.js"
   },
