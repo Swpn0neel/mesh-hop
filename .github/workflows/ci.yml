@@ -50,11 +50,21 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      # Fetch the uBlock Origin .xpi (gitignored; verified by SHA-256)
+      - name: Fetch uBlock Origin extension
+        shell: pwsh
+        run: |
+          $url  = "https://github.com/gorhill/uBlock/releases/download/1.72.2/uBlock0_1.72.2.firefox.signed.xpi"
+          $dest = "src-tauri/resources/uBlock0_1.72.2.firefox.signed.xpi"
+          New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
+
       # generate_context! requires the frontend dist and the sidecar binary to
       # exist at build time. Build the (cheap) frontend and drop a placeholder
       # sidecar so clippy can compile without the full 91 MB Node SEA build.
       - run: npm ci
-      - run: npm run desktop:frontend
+      - run: npm run desktop:prepare
       - name: Create placeholder sidecar
         shell: bash
         run: |
