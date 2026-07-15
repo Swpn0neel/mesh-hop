@@ -1,6 +1,6 @@
 {
   "name": "meshhop",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Tauri desktop app for automatic regional proxy discovery and browser routing",
   "private": true,
   "type": "module",
