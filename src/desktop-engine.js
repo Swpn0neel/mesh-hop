@@ -47,6 +47,7 @@ async function main() {
     autoFallback: booleanEnv("AUTO_FALLBACK", true),
     minThroughputMbps: integerEnv("MIN_THROUGHPUT_MBPS", 2, { minimum: 0 }),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
+    controlToken: process.env.CONTROL_TOKEN || null,
     logger,
   };
 

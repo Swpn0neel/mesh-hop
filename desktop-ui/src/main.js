@@ -17,16 +17,19 @@ const COUNTRIES = {
   JP: { name: "Japan", the: "Japan" },
   AU: { name: "Australia", the: "Australia" },
 };
-const flag = (code) =>
-  code && code.length === 2
-    ? [...code.toUpperCase()].map((c) => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("")
-    : "🏳️";
+const countryCode = (code) => code?.length === 2 ? code.toUpperCase() : "--";
 const countryName = (code) => COUNTRIES[code]?.name ?? code ?? "—";
 
 const RANK_HELP = {
   speed: "Selects the fastest measured route by sustained throughput and latency.",
   balanced: "Balances measured speed, latency, and consumer-ISP likelihood.",
   consumer: "Prefers consumer-ISP-looking exits, even if a little slower.",
+};
+
+const RANK_LABEL = {
+  speed: "Speed-first",
+  balanced: "Balanced",
+  consumer: "ISP-first",
 };
 
 const NETWORK_LABEL = {
@@ -42,11 +45,13 @@ const el = (id) => document.getElementById(id);
 const els = {};
 for (const id of [
   "tbState", "tbStateText", "minButton", "maxButton", "closeButton",
-  "idleRegion", "idleFlag", "country", "startButton", "options", "rankMode", "rankHelp",
+  "idleRegion", "idleFlag", "regionField", "country", "countryButton", "countryButtonText", "countryPopover", "countryList",
+  "startButton", "options", "rankMode", "rankHelp",
   "sampleSize", "sampleValue", "poolSize", "autoFallback",
-  "connectingRegion", "pipeline", "pipelineLive", "cancelButton",
+  "connectingRegion", "pipeline", "pipelineLive", "elapsedTime", "cancelButton",
   "exitFlag", "exitCountry", "liveBadge", "exitIp", "exitIsp", "exitNet",
-  "statSpeed", "statLatency", "statConsistency", "openBrowser", "rotateButton", "refreshButton", "stopButton",
+  "statSpeed", "statLatency", "statConsistency", "verifiedCount", "rankSummary",
+  "openBrowser", "openBrowserLabel", "rotateButton", "rotateLabel", "refreshButton", "refreshLabel", "stopButton", "stopLabel",
   "errorMessage", "retryButton", "errorStopButton",
   "drawer", "drawerHandle", "drawerBody", "tabExits", "tabActivity", "clearLogs",
   "exitsPanel", "activityPanel", "poolList", "logs", "exitsCount", "version", "toast",
@@ -61,14 +66,152 @@ let status = { phase: "stopped", message: "Ready to connect", pool: null };
 let selectedRank = "balanced";
 let logEntries = [];
 let actionBusy = false;
+let busyAction = "";
 let toastTimer;
 let maxStep = -1;
+let connectionStartedAt = 0;
+let elapsedTimer;
+let countryOptionElements = [];
+let countryTypeahead = "";
+let countryTypeaheadTimer;
 const STEPS = ["fetch", "test", "speed", "confirm"];
 
 /* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
-const stateText = { stopped: "Disconnected", starting: "Connecting…", running: "Connected", error: "Attention" };
+const stateText = { stopped: "Disconnected", starting: "Verifying route…", running: "Connected", error: "Needs attention" };
+
+function updateElapsed() {
+  const elapsedSeconds = connectionStartedAt ? Math.max(0, Math.floor((Date.now() - connectionStartedAt) / 1000)) : 0;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = String(elapsedSeconds % 60).padStart(2, "0");
+  els.elapsedTime.textContent = `${minutes}:${seconds} elapsed`;
+}
+
+function syncElapsedTimer(phase) {
+  if (phase === "starting") {
+    if (!connectionStartedAt) connectionStartedAt = Date.now();
+    updateElapsed();
+    if (!elapsedTimer) elapsedTimer = setInterval(updateElapsed, 1000);
+    return;
+  }
+  clearInterval(elapsedTimer);
+  elapsedTimer = undefined;
+  connectionStartedAt = 0;
+}
+
+function setButtonBusy(button, busy) {
+  if (busy) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
+}
+
+function buildCountryPicker() {
+  const fragment = document.createDocumentFragment();
+  countryOptionElements = Array.from(els.country.options, (option) => {
+    const item = document.createElement("div");
+    item.className = "country-option";
+    item.id = `countryOption-${option.value}`;
+    item.dataset.value = option.value;
+    item.dataset.label = option.textContent;
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", "false");
+    item.tabIndex = -1;
+
+    const code = document.createElement("span");
+    code.className = "country-option-code";
+    code.textContent = countryCode(option.value);
+
+    const name = document.createElement("span");
+    name.className = "country-option-name";
+    name.textContent = option.textContent;
+
+    const check = document.createElement("span");
+    check.className = "country-option-check";
+    check.setAttribute("aria-hidden", "true");
+    check.textContent = "✓";
+
+    item.append(code, name, check);
+    fragment.append(item);
+    return item;
+  });
+  els.countryList.replaceChildren(fragment);
+}
+
+function countryPopoverIsOpen() {
+  return els.countryPopover.matches(":popover-open");
+}
+
+function syncCountryPicker() {
+  const selected = els.country.value;
+  els.countryButtonText.textContent = countryName(selected);
+  for (const item of countryOptionElements) {
+    const active = item.dataset.value === selected;
+    item.setAttribute("aria-selected", String(active));
+  }
+}
+
+function focusCountryOption(index) {
+  const nextIndex = Math.max(0, Math.min(countryOptionElements.length - 1, index));
+  for (const item of countryOptionElements) item.tabIndex = -1;
+  const option = countryOptionElements[nextIndex];
+  if (!option) return;
+  option.tabIndex = 0;
+  option.focus({ preventScroll: true });
+  option.scrollIntoView({ block: "nearest" });
+}
+
+function positionCountryPopover() {
+  if (!countryPopoverIsOpen()) return;
+  const anchor = els.regionField.getBoundingClientRect();
+  const viewportPadding = 12;
+  const gap = 8;
+  const menuMaxHeight = 400;
+  const width = Math.min(anchor.width, window.innerWidth - viewportPadding * 2);
+  const left = Math.max(viewportPadding, Math.min(anchor.left, window.innerWidth - viewportPadding - width));
+
+  els.countryPopover.style.width = `${width}px`;
+  els.countryPopover.style.maxHeight = `${menuMaxHeight}px`;
+
+  const naturalHeight = Math.min(els.countryList.scrollHeight + 14, menuMaxHeight);
+  const roomAbove = anchor.top - viewportPadding - gap;
+  const roomBelow = window.innerHeight - anchor.bottom - viewportPadding - gap;
+  const placeBelow = roomBelow >= Math.min(naturalHeight, 240) || roomBelow >= roomAbove;
+  const availableHeight = Math.max(96, placeBelow ? roomBelow : roomAbove);
+  const height = Math.min(naturalHeight, availableHeight);
+  const top = placeBelow ? anchor.bottom + gap : Math.max(viewportPadding, anchor.top - gap - height);
+
+  els.countryPopover.dataset.side = placeBelow ? "below" : "above";
+  els.countryPopover.style.left = `${left}px`;
+  els.countryPopover.style.top = `${top}px`;
+  els.countryPopover.style.maxHeight = `${height}px`;
+}
+
+function chooseCountry(value) {
+  if (els.country.disabled) return;
+  if (els.country.value !== value) {
+    els.country.value = value;
+    els.country.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  if (countryPopoverIsOpen()) els.countryPopover.hidePopover();
+  els.countryButton.focus({ preventScroll: true });
+}
+
+function handleCountryTypeahead(event) {
+  if (event.key.length !== 1 || event.altKey || event.ctrlKey || event.metaKey) return false;
+  clearTimeout(countryTypeaheadTimer);
+  countryTypeahead += event.key.toLocaleLowerCase();
+  countryTypeaheadTimer = setTimeout(() => { countryTypeahead = ""; }, 600);
+
+  const activeIndex = Math.max(0, countryOptionElements.indexOf(document.activeElement));
+  const ordered = [...countryOptionElements.slice(activeIndex + 1), ...countryOptionElements.slice(0, activeIndex + 1)];
+  let match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(countryTypeahead));
+  if (!match && countryTypeahead.length > 1) {
+    countryTypeahead = event.key.toLocaleLowerCase();
+    match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(countryTypeahead));
+  }
+  if (match) focusCountryOption(countryOptionElements.indexOf(match));
+  return true;
+}
 
 function render() {
   const phase = status.phase ?? "stopped";
@@ -76,22 +219,29 @@ function render() {
   const current = pool?.current;
   document.body.dataset.phase = phase;
   els.tbStateText.textContent = stateText[phase] ?? phase;
+  syncElapsedTimer(phase);
 
   // Idle region echo
   const code = els.country.value;
   els.idleRegion.textContent = COUNTRIES[code]?.the ?? countryName(code);
-  els.idleFlag.textContent = flag(code);
+  els.idleFlag.textContent = countryCode(code);
   els.connectingRegion.textContent = code;
+  syncCountryPicker();
 
   // Lock config while running/starting
   const locked = phase === "running" || phase === "starting";
   els.country.disabled = locked;
+  els.countryButton.disabled = locked;
+  if (locked && countryPopoverIsOpen()) els.countryPopover.hidePopover();
   els.sampleSize.disabled = locked;
   els.poolSize.disabled = locked;
   els.autoFallback.disabled = locked;
   for (const b of els.rankMode.querySelectorAll("button")) b.disabled = locked;
   els.startButton.disabled = actionBusy;
   els.cancelButton.disabled = actionBusy;
+  els.retryButton.disabled = actionBusy;
+  els.errorStopButton.disabled = actionBusy;
+  els.stopButton.disabled = actionBusy;
 
   if (phase === "error") {
     els.errorMessage.textContent = status.message || "The engine stopped unexpectedly.";
@@ -99,24 +249,34 @@ function render() {
 
   if (current) {
     const unhealthy = pool.autoFallback === false && (current.consecutiveFailures || 0) >= 3;
-    els.exitFlag.textContent = flag(pool.country);
+    els.exitFlag.textContent = countryCode(pool.country);
     els.exitCountry.textContent = countryName(pool.country);
     els.liveBadge.classList.toggle("warn", unhealthy);
-    els.liveBadge.lastChild.textContent = unhealthy ? "Unstable" : "Live";
+    els.liveBadge.lastElementChild.textContent = unhealthy ? "Unstable" : "Live";
     els.exitIp.textContent = current.exitIp || "—";
     els.exitIsp.textContent = current.network?.isp || current.network?.org || "Unknown network";
     const kind = current.network?.kind ?? "unknown";
     els.exitNet.textContent = NETWORK_LABEL[kind] ?? NETWORK_LABEL.unknown;
     els.exitNet.className = `exit-net ${kind}`;
-    els.statSpeed.textContent = current.throughputMbps ? `${current.throughputMbps} Mbps` : "—";
+    els.statSpeed.textContent = current.throughputMbps != null ? `${current.throughputMbps} Mbps` : "—";
     els.statLatency.textContent = current.latencyMs != null ? `${current.latencyMs} ms` : "—";
     setConsistency(current.speedConsistency);
+    els.verifiedCount.textContent = String(pool.proxies?.length ?? 0);
+    els.rankSummary.textContent = `${RANK_LABEL[pool.rankMode] ?? "Balanced"} ranking`;
   }
 
   const canAct = phase === "running" && !actionBusy;
   els.openBrowser.disabled = !canAct;
   els.rotateButton.disabled = !canAct;
   els.refreshButton.disabled = !canAct;
+  els.openBrowserLabel.textContent = busyAction === "browser" ? "Opening browser…" : "Open routed browser";
+  els.rotateLabel.textContent = busyAction === "rotate" ? "Rotating…" : "Rotate exit";
+  els.refreshLabel.textContent = busyAction === "refresh" ? "Refreshing…" : "Refresh pool";
+  els.stopLabel.textContent = busyAction === "disconnect" ? "Disconnecting…" : "Disconnect";
+  setButtonBusy(els.openBrowser, busyAction === "browser");
+  setButtonBusy(els.rotateButton, busyAction === "rotate");
+  setButtonBusy(els.refreshButton, busyAction === "refresh");
+  setButtonBusy(els.stopButton, busyAction === "disconnect");
 
   renderPool(pool);
 }
@@ -141,7 +301,16 @@ function renderPool(pool) {
   if (!proxies.length) {
     const empty = document.createElement("div");
     empty.className = "pool-empty";
-    empty.textContent = status.phase === "starting" ? "Testing candidates…" : "No verified exits yet.";
+    const title = document.createElement("strong");
+    const description = document.createElement("span");
+    if (status.phase === "starting") {
+      title.textContent = "Verification in progress";
+      description.textContent = "Measured exits will appear here as checks complete.";
+    } else {
+      title.textContent = "No verified exits yet";
+      description.textContent = "Connect to build a measured fallback pool.";
+    }
+    empty.append(title, description);
     els.poolList.append(empty);
     return;
   }
@@ -153,7 +322,7 @@ function renderPool(pool) {
 
     const state = document.createElement("span");
     state.className = "pool-status";
-    state.textContent = active ? "LIVE" : "STBY";
+    state.textContent = active ? "LIVE" : "READY";
 
     const id = document.createElement("div");
     id.className = "pool-id";
@@ -168,7 +337,7 @@ function renderPool(pool) {
     const speed = document.createElement("div");
     speed.className = "pool-speed";
     const mbps = document.createElement("strong");
-    mbps.textContent = proxy.throughputMbps ? `${proxy.throughputMbps} Mbps` : "—";
+    mbps.textContent = proxy.throughputMbps != null ? `${proxy.throughputMbps} Mbps` : "—";
     const lat = document.createElement("span");
     lat.textContent = proxy.latencyMs != null ? `${proxy.latencyMs} ms` : "";
     speed.append(mbps, lat);
@@ -201,6 +370,19 @@ function advancePipeline(message) {
     maxStep = idx;
     paintPipeline();
   }
+}
+
+function friendlyProgressMessage(message) {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  const speed = normalized.match(/->\s*([\d.]+\s*Mbps)/i)?.[1];
+  if (/^speed\s+\d+\./i.test(normalized)) {
+    return speed ? `A leading route sustained ${speed}.` : "A leading route passed sustained-speed testing.";
+  }
+  if (/^\d+\./.test(normalized) && /(?:https?|socks)/i.test(normalized)) {
+    return "A candidate passed the reachability and exit-location checks.";
+  }
+  if (/^selected\s/i.test(normalized)) return "Route verified. Preparing the secure browser profile…";
+  return normalized;
 }
 
 function paintPipeline() {
@@ -256,9 +438,10 @@ function realBackend() {
 /* ------------------------------------------------------------------ *
  * Actions
  * ------------------------------------------------------------------ */
-async function withAction(successMessage, fn) {
+async function withAction(action, successMessage, fn) {
   if (actionBusy) return;
   actionBusy = true;
+  busyAction = action;
   render();
   try {
     const result = await fn();
@@ -269,6 +452,7 @@ async function withAction(successMessage, fn) {
     addLog("error", String(error?.message ?? error));
   } finally {
     actionBusy = false;
+    busyAction = "";
     await updateStatus();
   }
 }
@@ -289,7 +473,7 @@ async function connect() {
   resetPipeline();
   els.pipelineLive.textContent = "Starting the proxy engine…";
   addLog("info", `Connecting to a ${els.country.value} exit in ${selectedRank} mode`);
-  await withAction(null, async () => {
+  await withAction("connect", null, async () => {
     status = await backend.invoke("start_engine", { config: startConfig() });
     render();
   });
@@ -305,6 +489,71 @@ async function updateStatus() {
   }
 }
 
+function wireCountryPicker() {
+  els.countryButton.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    if (!countryPopoverIsOpen()) els.countryPopover.showPopover();
+    else focusCountryOption(countryOptionElements.findIndex((item) => item.dataset.value === els.country.value));
+  });
+
+  els.countryPopover.addEventListener("toggle", () => {
+    const open = countryPopoverIsOpen();
+    els.countryButton.setAttribute("aria-expanded", String(open));
+    if (!open) {
+      countryTypeahead = "";
+      for (const item of countryOptionElements) item.tabIndex = -1;
+      return;
+    }
+    positionCountryPopover();
+    requestAnimationFrame(() => {
+      const selectedIndex = countryOptionElements.findIndex((item) => item.dataset.value === els.country.value);
+      focusCountryOption(selectedIndex);
+    });
+  });
+
+  els.countryList.addEventListener("click", (event) => {
+    const option = event.target.closest(".country-option");
+    if (option) chooseCountry(option.dataset.value);
+  });
+
+  els.countryList.addEventListener("keydown", (event) => {
+    const activeIndex = Math.max(0, countryOptionElements.indexOf(document.activeElement));
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      focusCountryOption((activeIndex + direction + countryOptionElements.length) % countryOptionElements.length);
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      focusCountryOption(event.key === "Home" ? 0 : countryOptionElements.length - 1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseCountry(countryOptionElements[activeIndex].dataset.value);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      els.countryPopover.hidePopover();
+      els.countryButton.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      els.countryPopover.hidePopover();
+      (event.shiftKey ? els.countryButton : els.startButton).focus({ preventScroll: true });
+      return;
+    }
+    if (handleCountryTypeahead(event)) event.preventDefault();
+  });
+
+  window.addEventListener("resize", positionCountryPopover);
+  document.querySelector(".hero").addEventListener("scroll", positionCountryPopover, { passive: true });
+}
+
 /* ------------------------------------------------------------------ *
  * Wiring
  * ------------------------------------------------------------------ */
@@ -314,12 +563,17 @@ function wire() {
   els.closeButton.addEventListener("click", () => backend.close?.());
 
   els.country.addEventListener("change", render);
+  wireCountryPicker();
 
   els.rankMode.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-rank]");
     if (!button || button.disabled) return;
     selectedRank = button.dataset.rank;
-    for (const b of els.rankMode.querySelectorAll("button")) b.classList.toggle("active", b === button);
+    for (const b of els.rankMode.querySelectorAll("button")) {
+      const active = b === button;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-pressed", String(active));
+    }
     els.rankHelp.textContent = RANK_HELP[selectedRank];
   });
 
@@ -327,13 +581,21 @@ function wire() {
     els.sampleValue.textContent = els.sampleSize.value;
   });
 
+  els.options.addEventListener("toggle", () => {
+    if (!els.options.open) return;
+    requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      els.options.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "nearest" });
+    });
+  });
+
   els.startButton.addEventListener("click", connect);
   els.retryButton.addEventListener("click", connect);
-  els.cancelButton.addEventListener("click", () => withAction("Disconnected", async () => {
+  els.cancelButton.addEventListener("click", () => withAction("disconnect", "Disconnected", async () => {
     status = await backend.invoke("stop_engine");
     render();
   }));
-  const disconnect = () => withAction("Disconnected", async () => {
+  const disconnect = () => withAction("disconnect", "Disconnected", async () => {
     status = await backend.invoke("stop_engine");
     render();
   });
@@ -341,17 +603,17 @@ function wire() {
   els.errorStopButton.addEventListener("click", disconnect);
 
   els.openBrowser.addEventListener("click", () =>
-    withAction("Opened routed browser", () => backend.invoke("open_browser")));
+    withAction("browser", "Opened routed browser", () => backend.invoke("open_browser")));
 
   els.rotateButton.addEventListener("click", () =>
-    withAction("Rotated to the next verified exit", async () => {
+    withAction("rotate", "Rotated to the next verified exit", async () => {
       status.pool = await backend.invoke("rotate_exit");
       render();
     }));
 
   els.refreshButton.addEventListener("click", () => {
     addLog("info", "Refreshing published proxy sources");
-    withAction("Fresh exit pool ready", async () => {
+    withAction("refresh", "Fresh exit pool ready", async () => {
       status.pool = await backend.invoke("refresh_exits");
       render();
     });
@@ -361,6 +623,7 @@ function wire() {
   els.drawerHandle.addEventListener("click", () => {
     const open = els.drawer.classList.toggle("open");
     els.drawerHandle.setAttribute("aria-expanded", String(open));
+    els.drawerBody.setAttribute("aria-hidden", String(!open));
   });
   const selectTab = (tab) => {
     const exits = tab === "exits";
@@ -368,17 +631,41 @@ function wire() {
     els.tabActivity.classList.toggle("active", !exits);
     els.exitsPanel.classList.toggle("hidden", !exits);
     els.activityPanel.classList.toggle("hidden", exits);
+    els.exitsPanel.hidden = !exits;
+    els.activityPanel.hidden = exits;
+    els.tabExits.setAttribute("aria-selected", String(exits));
+    els.tabActivity.setAttribute("aria-selected", String(!exits));
+    els.tabExits.tabIndex = exits ? 0 : -1;
+    els.tabActivity.tabIndex = exits ? -1 : 0;
     els.clearLogs.classList.toggle("hidden", exits);
     if (!els.drawer.classList.contains("open")) {
       els.drawer.classList.add("open");
       els.drawerHandle.setAttribute("aria-expanded", "true");
+      els.drawerBody.setAttribute("aria-hidden", "false");
     }
   };
   els.tabExits.addEventListener("click", () => selectTab("exits"));
   els.tabActivity.addEventListener("click", () => selectTab("activity"));
+  for (const tab of [els.tabExits, els.tabActivity]) {
+    tab.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const next = tab === els.tabExits ? els.tabActivity : els.tabExits;
+      selectTab(next === els.tabExits ? "exits" : "activity");
+      next.focus();
+    });
+  }
   els.clearLogs.addEventListener("click", () => {
     logEntries = [];
     els.logs.replaceChildren();
+    const row = document.createElement("div");
+    row.className = "log dim";
+    const time = document.createElement("span");
+    time.textContent = "—";
+    const message = document.createElement("p");
+    message.textContent = "Activity cleared.";
+    row.append(time, message);
+    els.logs.append(row);
   });
 }
 
@@ -388,6 +675,7 @@ function wire() {
 async function init() {
   els.version.textContent = `v${__APP_VERSION__}`;
   els.rankHelp.textContent = RANK_HELP[selectedRank];
+  buildCountryPicker();
   wire();
   render();
 
@@ -396,7 +684,7 @@ async function init() {
     const message = payload.message || "";
     addLog(level, message);
     if (status.phase === "starting" && level !== "error") {
-      els.pipelineLive.textContent = message;
+      els.pipelineLive.textContent = friendlyProgressMessage(message);
       advancePipeline(message);
     }
   });
@@ -411,7 +699,7 @@ async function init() {
   });
 
   await updateStatus();
-  setInterval(updateStatus, 2500);
+  setInterval(updateStatus, 5000);
 }
 
 /* ------------------------------------------------------------------ *

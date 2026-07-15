@@ -9,6 +9,7 @@ export default [
       "src-tauri/**",
       "release/**",
       "node_modules/**",
+      "website/**",
     ],
   },
   js.configs.recommended,

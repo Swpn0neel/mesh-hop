@@ -8,3 +8,17 @@ src-tauri/target/
 src-tauri/binaries/*.exe
 src-tauri/binaries/meshhop-engine-*
 .serena/
+DESKTOP.md
+
+# Release installers — publish via GitHub Releases instead
+release/
+
+# Tauri auto-generated files (recreated by tauri dev/build)
+src-tauri/gen/
+
+# Vendored large browser extension binaries (fetch at build time)
+src-tauri/resources/*.xpi
+src-tauri/resources/*.crx
+
+# Website download mirrors of release binaries
+website/public/downloads/

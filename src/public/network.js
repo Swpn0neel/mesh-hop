@@ -1,3 +1,5 @@
+import { userAgent } from "./user-agent.js";
+
 const hostingPattern = new RegExp(
   [
     "amazon", "aws", "google", "microsoft", "azure", "oracle", "digitalocean", "hetzner",
@@ -27,7 +29,7 @@ export function classifyConnection(connection = {}) {
 
 export async function lookupNetwork(exitIp, timeoutMs = 5_000) {
   const response = await fetch(`https://ipwho.is/${encodeURIComponent(exitIp)}`, {
-    headers: { "user-agent": "MeshHop-Public/0.2 (+personal proxy ranker)" },
+    headers: { "user-agent": userAgent("+personal proxy ranker") },
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`Network lookup returned HTTP ${response.status}`);

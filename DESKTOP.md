@@ -7,13 +7,13 @@ The desktop package uses Tauri 2.11, a vanilla Vite frontend, and the existing J
 For ordinary Windows installation, use the NSIS setup executable:
 
 ```text
-src-tauri/target/release/bundle/nsis/MeshHop_0.2.7_x64-setup.exe
+src-tauri/target/release/bundle/nsis/MeshHop_0.3.2_x64-setup.exe
 ```
 
 The MSI package is also available for managed or silent deployment:
 
 ```text
-src-tauri/target/release/bundle/msi/MeshHop_0.2.7_x64_en-US.msi
+src-tauri/target/release/bundle/msi/MeshHop_0.3.2_x64_en-US.msi
 ```
 
 Both packages include the proxy engine. Node.js and Rust are not required on the installed computer. Mozilla Firefox is recommended for the dedicated proxied browser profile (MeshHop installs the bundled uBlock Origin extension into an isolated Firefox profile). If Firefox is not present, MeshHop falls back to Chrome, Chromium, or Edge with a proxied, isolated profile (without uBlock Origin).

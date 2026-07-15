@@ -182,6 +182,9 @@ export class PublicProxyPool extends EventEmitter {
       const activeBeforeCommit = this.current ?? previousCurrent;
       const activeKey = activeBeforeCommit ? proxyKey(activeBeforeCommit) : null;
       this.proxies = uniqueExitIps(enriched).slice(0, this.poolSize);
+      if (this.proxies.length === 0) {
+        throw new Error("Confirmed proxies did not contain a usable distinct exit IP");
+      }
       let preservedIndex = this.proxies.findIndex((proxy) => proxyKey(proxy) === activeKey);
       if (activeBeforeCommit && preservedIndex < 0 && !this.autoFallback) {
         this.proxies = [

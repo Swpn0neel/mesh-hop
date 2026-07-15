@@ -1,5 +1,6 @@
 import net from "node:net";
 import tls from "node:tls";
+import { USER_AGENT } from "./user-agent.js";
 import ipaddr from "ipaddr.js";
 
 // Build the SOCKS5 address portion (ATYP + address) for a target host. IPv4 and
@@ -167,7 +168,7 @@ async function httpConnectOnSocket(socket, targetHost, targetPort, deadline) {
     // IPv6 literals must be bracketed in the request-target and Host header.
     const authorityHost = net.isIPv6(targetHost) ? `[${targetHost}]` : targetHost;
     socket.write(
-      `CONNECT ${authorityHost}:${targetPort} HTTP/1.1\r\nHost: ${authorityHost}:${targetPort}\r\nProxy-Connection: keep-alive\r\nUser-Agent: MeshHop-Public/0.2\r\n\r\n`,
+      `CONNECT ${authorityHost}:${targetPort} HTTP/1.1\r\nHost: ${authorityHost}:${targetPort}\r\nProxy-Connection: keep-alive\r\nUser-Agent: ${USER_AGENT}\r\n\r\n`,
     );
     const header = await reader.readUntil(Buffer.from("\r\n\r\n"), 16 * 1024, remaining(deadline));
     const statusLine = header.toString("latin1").split("\r\n", 1)[0];
@@ -316,7 +317,7 @@ export async function httpsGetViaProxy(
     );
     secure.once("secureConnect", () => {
       secure.write(
-        `GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: MeshHop-Public/0.2\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
+        `GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: ${USER_AGENT}\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
       );
     });
     secure.on("data", (chunk) => {
@@ -421,8 +422,22 @@ export async function measureDownloadThroughput(
     let firstBodyAt = 0;
     let ttfbMs = 0;
     let bodyBytes = 0;
-    const readings = [];
+    let firstReading = null;
+    let measurementStart = null;
+    let measurementEnd = null;
+    let lastReading = null;
     let settled = false;
+
+    // Only four boundary samples are needed: the transfer start, the first
+    // post-warm-up sample, the latest sample in the measurement window, and
+    // the transfer end. Keeping those boundaries makes memory use constant
+    // regardless of how many TCP chunks arrive.
+    function selectedReadings() {
+      return [firstReading, measurementStart, measurementEnd, lastReading]
+        .filter(Boolean)
+        .filter((reading, index, values) => values.indexOf(reading) === index)
+        .sort((left, right) => left.tMs - right.tMs);
+    }
 
     // On deadline, measure from whatever was transferred rather than discarding a
     // slow-but-working exit; the guards in finish() reject only if too little
@@ -436,6 +451,7 @@ export async function measureDownloadThroughput(
       secure.destroy();
       if (error) return reject(error);
       if (statusCode !== 200) return reject(new Error(`Speed probe returned HTTP ${statusCode || "?"}`));
+      const readings = selectedReadings();
       if (readings.length < 2) return reject(new Error("Speed probe did not transfer enough data to measure"));
       const throughputMbps = windowedThroughputMbps(readings, { warmupMs, measureMs });
       if (throughputMbps <= 0) return reject(new Error("Speed probe did not produce a usable measurement"));
@@ -450,7 +466,7 @@ export async function measureDownloadThroughput(
     secure.once("secureConnect", () => {
       requestSentAt = performance.now();
       secure.write(
-        `GET /__down?bytes=${requestBytes} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: MeshHop-Public/0.2\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
+        `GET /__down?bytes=${requestBytes} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: ${USER_AGENT}\r\nAccept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n`,
       );
     });
 
@@ -480,7 +496,15 @@ export async function measureDownloadThroughput(
       }
       bodyBytes += bodyChunk.length;
       const tMs = now - firstBodyAt;
-      readings.push({ tMs, bytes: bodyBytes });
+      const reading = { tMs, bytes: bodyBytes };
+      firstReading ??= reading;
+      lastReading = reading;
+      if (!measurementStart && tMs >= warmupMs) {
+        measurementStart = reading;
+        measurementEnd = reading;
+      } else if (measurementStart && tMs <= measurementStart.tMs + measureMs) {
+        measurementEnd = reading;
+      }
       if (tMs >= warmupMs + measureMs) finish();
     });
 

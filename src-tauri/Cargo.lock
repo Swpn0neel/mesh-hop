@@ -1787,9 +1787,10 @@ dependencies = [
 
 [[package]]
 name = "meshhop-desktop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "parking_lot",
+ "rand",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

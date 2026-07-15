@@ -11,11 +11,6 @@ export function parseCloudflareTrace(text) {
   return values;
 }
 
-export function megabitsPerSecond(bytes, elapsedMs) {
-  if (!Number.isFinite(bytes) || bytes <= 0 || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
-  return Math.round(((bytes * 8) / (elapsedMs / 1_000) / 1_000_000) * 100) / 100;
-}
-
 export async function benchmarkProxyThroughput(
   proxy,
   { timeoutMs = 12_000, warmupMs, measureMs } = {},

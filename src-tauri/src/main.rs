@@ -1,11 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use parking_lot::Mutex;
+use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     env, fs,
-    net::TcpListener,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     sync::Arc,
@@ -40,6 +40,7 @@ struct RuntimeState {
     message: String,
     proxy_port: Option<u16>,
     control_port: Option<u16>,
+    control_token: Option<String>,
     generation: u64,
 }
 
@@ -51,6 +52,7 @@ impl Default for RuntimeState {
             message: "Ready to find an exit".into(),
             proxy_port: None,
             control_port: None,
+            control_token: None,
             generation: 0,
         }
     }
@@ -103,12 +105,6 @@ fn emit_log(app: &AppHandle, level: &str, message: impl Into<String>) {
             message: message.into(),
         },
     );
-}
-
-fn require_available_port(port: u16, purpose: &str) -> Result<u16, String> {
-    TcpListener::bind(("127.0.0.1", port))
-        .map(|_| port)
-        .map_err(|_| format!("MeshHop {purpose} port {port} is already in use; close the older MeshHop instance and retry"))
 }
 
 fn process_engine_line(
@@ -215,8 +211,13 @@ async fn start_engine(
 
     // Firefox reads proxy preferences only at profile startup. Stable ports keep an already-open
     // dedicated profile valid across engine and app restarts.
-    let proxy_port = require_available_port(17877, "proxy")?;
-    let control_port = require_available_port(17878, "control")?;
+    let proxy_port = 17877;
+    let control_port = 17878;
+    let control_token = Alphanumeric.sample_string(&mut rand::rng(), 48);
+    let command = app
+        .shell()
+        .sidecar("meshhop-engine")
+        .map_err(|error| error.to_string())?;
 
     let generation = {
         let mut inner = state.runtime.lock();
@@ -228,18 +229,17 @@ async fn start_engine(
         inner.message = format!("Testing published {country} exits…");
         inner.proxy_port = Some(proxy_port);
         inner.control_port = Some(control_port);
+        inner.control_token = Some(control_token.clone());
         inner.generation
     };
     emit_state(&app, &state.runtime);
 
-    let command = app
-        .shell()
-        .sidecar("meshhop-engine")
-        .map_err(|error| error.to_string())?
+    let command = command
         .env("COUNTRY", &country)
         .env("RANK_MODE", &config.rank_mode)
         .env("LISTEN_PORT", proxy_port.to_string())
         .env("CONTROL_PORT", control_port.to_string())
+        .env("CONTROL_TOKEN", &control_token)
         .env("MAX_CANDIDATES", config.max_candidates.to_string())
         .env("POOL_SIZE", config.pool_size.to_string())
         .env(
@@ -260,6 +260,7 @@ async fn start_engine(
             inner.message = error.to_string();
             inner.proxy_port = None;
             inner.control_port = None;
+            inner.control_token = None;
             return Err(error.to_string());
         }
     };
@@ -299,6 +300,9 @@ async fn start_engine(
                     let mut inner = runtime.lock();
                     if inner.generation == generation {
                         inner.child = None;
+                        inner.proxy_port = None;
+                        inner.control_port = None;
+                        inner.control_token = None;
                         if inner.phase != "stopped" && inner.phase != "error" {
                             inner.phase = "error".into();
                             inner.message = "Proxy engine stopped unexpectedly".into();
@@ -324,6 +328,7 @@ fn stop_engine(app: AppHandle, state: State<'_, AppState>) -> Result<DesktopStat
         inner.message = "Proxy stopped".into();
         inner.proxy_port = None;
         inner.control_port = None;
+        inner.control_token = None;
         inner.child.take()
     };
     if let Some(child) = child {
@@ -335,9 +340,13 @@ fn stop_engine(app: AppHandle, state: State<'_, AppState>) -> Result<DesktopStat
 
 #[tauri::command]
 async fn engine_status(state: State<'_, AppState>) -> Result<DesktopStatus, String> {
-    let (base, control_port) = {
+    let (base, control_port, control_token) = {
         let inner = state.runtime.lock();
-        (snapshot(&inner, None), inner.control_port)
+        (
+            snapshot(&inner, None),
+            inner.control_port,
+            inner.control_token.clone(),
+        )
     };
     let Some(port) = control_port else {
         return Ok(base);
@@ -345,12 +354,14 @@ async fn engine_status(state: State<'_, AppState>) -> Result<DesktopStatus, Stri
     if base.phase != "running" {
         return Ok(base);
     }
-    let response = state
+    let mut request = state
         .client
         .get(format!("http://127.0.0.1:{port}/api/status"))
-        .timeout(Duration::from_secs(3))
-        .send()
-        .await;
+        .timeout(Duration::from_secs(3));
+    if let Some(token) = control_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await;
     match response {
         Ok(response) if response.status().is_success() => {
             let pool = response
@@ -367,18 +378,23 @@ async fn engine_status(state: State<'_, AppState>) -> Result<DesktopStatus, Stri
 }
 
 async fn post_control(state: &AppState, action: &str, timeout: u64) -> Result<Value, String> {
-    let port = state
-        .runtime
-        .lock()
-        .control_port
-        .ok_or_else(|| "Start the proxy first".to_string())?;
-    let response = state
+    let (port, control_token) = {
+        let inner = state.runtime.lock();
+        (
+            inner
+                .control_port
+                .ok_or_else(|| "Start the proxy first".to_string())?,
+            inner.control_token.clone(),
+        )
+    };
+    let mut request = state
         .client
         .post(format!("http://127.0.0.1:{port}/api/{action}"))
-        .timeout(Duration::from_secs(timeout))
-        .send()
-        .await
-        .map_err(|error| error.to_string())?;
+        .timeout(Duration::from_secs(timeout));
+    if let Some(token) = control_token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
         return Err(format!("Engine returned HTTP {}", response.status()));
     }

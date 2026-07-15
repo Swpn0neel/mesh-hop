@@ -5,10 +5,11 @@ import net from "node:net";
 import test from "node:test";
 import { httpsUpgradeLocation, redirectHttpRequestToHttps } from "../src/http-upgrade.js";
 import { classifyConnection, compareProxyQuality } from "../src/public/network.js";
-import { megabitsPerSecond, parseCloudflareTrace } from "../src/public/probe.js";
+import { parseCloudflareTrace } from "../src/public/probe.js";
 import { parseProxyLines } from "../src/public/sources.js";
 import { PublicProxyPool, uniqueExitIps } from "../src/public/pool.js";
 import { connectViaProxy } from "../src/public/tunnel.js";
+import { USER_AGENT } from "../src/public/user-agent.js";
 import { startPublicMode } from "../src/public.js";
 
 async function listen(server) {
@@ -91,7 +92,6 @@ test("network heuristics balance consumer-looking networks against latency", () 
 });
 
 test("speed ranking uses transfer throughput rather than latency alone", () => {
-  assert.equal(megabitsPerSecond(250_000, 1_000), 2);
   const lowLatencyButSlow = { latencyMs: 200, throughputMbps: 0.5 };
   const higherLatencyButFast = { latencyMs: 700, throughputMbps: 10 };
   assert.ok(compareProxyQuality(higherLatencyButFast, lowLatencyButSlow, "speed") < 0);
@@ -166,7 +166,9 @@ test("Cloudflare trace parser extracts observed IP and country", () => {
 test("HTTP CONNECT upstream creates a working tunnel", async () => {
   const proxyServer = net.createServer((socket) => {
     socket.once("data", (header) => {
-      assert.match(header.toString("latin1"), /^CONNECT example\.com:443 HTTP\/1\.1/);
+      const text = header.toString("latin1");
+      assert.match(text, /^CONNECT example\.com:443 HTTP\/1\.1/);
+      assert.ok(text.includes(`User-Agent: ${USER_AGENT}\r\n`));
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
       socket.on("data", (data) => socket.write(data));
     });
@@ -203,6 +205,99 @@ test("startPublicMode survives a failed initial discovery and starts empty", asy
   } finally {
     await app.close();
   }
+});
+
+test("desktop control endpoints require the configured bearer token", async () => {
+  const app = await startPublicMode({
+    sourceUrls: ["http://127.0.0.1:1/none"],
+    listenPort: 0,
+    controlPort: 0,
+    controlToken: "test-control-token",
+    refreshMinutes: 60,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  try {
+    const base = `http://127.0.0.1:${app.controlPort}`;
+    const unauthorized = await fetch(`${base}/api/status`);
+    assert.equal(unauthorized.status, 401);
+
+    const authorized = await fetch(`${base}/api/status`, {
+      headers: { authorization: "Bearer test-control-token" },
+    });
+    assert.equal(authorized.status, 200);
+    assert.deepEqual((await authorized.json()).proxies, []);
+
+    const unauthorizedRotate = await fetch(`${base}/api/rotate`, { method: "POST" });
+    assert.equal(unauthorizedRotate.status, 401);
+  } finally {
+    await app.close();
+  }
+});
+
+test("startPublicMode reports an occupied proxy port before discovery", async () => {
+  const blocker = net.createServer();
+  const port = await listen(blocker);
+  try {
+    await assert.rejects(
+      () => startPublicMode({
+        sourceUrls: ["http://127.0.0.1:1/should-not-be-fetched"],
+        listenPort: port,
+        controlPort: 0,
+        logger: { info() {}, warn() {}, error() {} },
+      }),
+      new RegExp(`browser proxy port ${port} is already in use`),
+    );
+  } finally {
+    await close(blocker);
+  }
+});
+
+test("a control-port bind failure releases the already-bound proxy port", async () => {
+  const proxyReservation = net.createServer();
+  const proxyPort = await listen(proxyReservation);
+  await close(proxyReservation);
+
+  const controlBlocker = net.createServer();
+  const controlPort = await listen(controlBlocker);
+  try {
+    await assert.rejects(
+      () => startPublicMode({
+        sourceUrls: ["http://127.0.0.1:1/should-not-be-fetched"],
+        listenPort: proxyPort,
+        controlPort,
+        logger: { info() {}, warn() {}, error() {} },
+      }),
+      new RegExp(`control port ${controlPort} is already in use`),
+    );
+
+    const rebound = net.createServer();
+    try {
+      await new Promise((resolve, reject) => {
+        rebound.once("error", reject);
+        rebound.listen(proxyPort, "127.0.0.1", resolve);
+      });
+    } finally {
+      await close(rebound);
+    }
+  } finally {
+    await close(controlBlocker);
+  }
+});
+
+test("closing public mode destroys active sockets and is idempotent", async () => {
+  const app = await startPublicMode({
+    sourceUrls: ["http://127.0.0.1:1/none"],
+    listenPort: 0,
+    controlPort: 0,
+    refreshMinutes: 60,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  const socket = net.connect(app.proxyPort, "127.0.0.1");
+  await once(socket, "connect");
+  const closed = once(socket, "close");
+  await app.close();
+  await closed;
+  await app.close();
 });
 
 test("SOCKS5 encodes an IPv4 literal target as an address, not a hostname", async () => {

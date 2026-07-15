@@ -5,7 +5,7 @@
 //   node scripts/sync-version.mjs --check  # exit non-zero if anything is stale
 //
 // Run --check in CI so a version bump can never drift between package.json,
-// tauri.conf.json, Cargo.toml, and the README installer links again.
+// tauri.conf.json, Cargo.toml, runtime user-agent, and README links again.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -28,6 +28,10 @@ const targets = [
     // Only the [package] version is line-anchored; dependency versions are inline.
     file: "src-tauri/Cargo.toml",
     update: (text) => text.replace(/^version = "[^"]+"/m, `version = "${version}"`),
+  },
+  {
+    file: "src/public/user-agent.js",
+    update: (text) => text.replace(/MeshHop-Public\/\d+\.\d+\.\d+/, `MeshHop-Public/${version}`),
   },
   {
     file: "README.md",

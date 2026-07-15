@@ -7,6 +7,7 @@ import { parseConnectAuthority } from "./net-policy.js";
 import { PublicProxyPool } from "./public/pool.js";
 import { DEFAULT_SOURCE_URLS, proxyKey } from "./public/sources.js";
 import { connectViaProxy } from "./public/tunnel.js";
+import { USER_AGENT } from "./public/user-agent.js";
 
 function proxyError(socket, status, message) {
   if (socket.destroyed) return;
@@ -33,8 +34,17 @@ async function act(name){document.querySelector('#summary').textContent=name==='
 load();setInterval(load,5000);
 </script>`;
 
-function createControlServer(pool) {
+function createControlServer(pool, controlToken) {
   return http.createServer(async (request, response) => {
+    if (controlToken && request.headers.authorization !== `Bearer ${controlToken}`) {
+      response.writeHead(401, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+        "www-authenticate": "Bearer",
+      });
+      response.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
     const url = new URL(request.url, "http://127.0.0.1");
     if (request.method === "GET" && url.pathname === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -67,16 +77,32 @@ function createControlServer(pool) {
   });
 }
 
-async function listen(server, host, port) {
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      server.off("error", reject);
-      resolve();
+async function listen(server, host, port, purpose) {
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    if (error?.code === "EADDRINUSE") {
+      throw new Error(`MeshHop ${purpose} port ${port} is already in use; close the other instance and retry`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
   const address = server.address();
   return typeof address === "object" && address ? address.port : port;
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
 }
 
 export async function startPublicMode({
@@ -95,6 +121,7 @@ export async function startPublicMode({
   autoFallback = true,
   minThroughputMbps = 2,
   refreshMinutes = 10,
+  controlToken = null,
   logger = console,
 } = {}) {
   const pool = new PublicProxyPool({
@@ -109,23 +136,28 @@ export async function startPublicMode({
     minThroughputMbps,
     logger,
   });
-  // A transient source outage or an unlucky sample should not prevent the app
-  // from starting. Come up with an empty pool the user can retry from the
-  // control UI rather than crashing the engine on the very first refresh.
-  try {
-    await pool.refresh();
-  } catch (error) {
-    logger.warn?.(`Initial proxy discovery failed; starting with an empty pool. ${error.message}`);
-  }
   const openSockets = new Set();
+  let closing = false;
+  let closePromise = null;
+
+  function trackSocket(socket) {
+    if (closing) {
+      socket.destroy();
+      return false;
+    }
+    openSockets.add(socket);
+    socket.once("close", () => openSockets.delete(socket));
+    return true;
+  }
+
+  function destroyOpenSockets() {
+    for (const socket of openSockets) socket.destroy();
+  }
 
   const proxyServer = http.createServer((request, response) => {
     redirectHttpRequestToHttps(request, response, "MeshHop Public");
   });
-  proxyServer.on("connection", (socket) => {
-    openSockets.add(socket);
-    socket.once("close", () => openSockets.delete(socket));
-  });
+  proxyServer.on("connection", trackSocket);
 
   proxyServer.on("connect", async (request, clientSocket, head) => {
     let destination;
@@ -181,10 +213,12 @@ export async function startPublicMode({
         proxy = authoritative;
         continue;
       }
-      openSockets.add(upstream);
-      upstream.once("close", () => openSockets.delete(upstream));
+      if (!trackSocket(upstream)) {
+        clientSocket.destroy();
+        return;
+      }
       pool.reportSuccess(proxy);
-      clientSocket.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: MeshHop-Public\r\n\r\n");
+      clientSocket.write(`HTTP/1.1 200 Connection Established\r\nProxy-Agent: ${USER_AGENT}\r\n\r\n`);
       if (head.length) upstream.write(head);
       clientSocket.pipe(upstream);
       upstream.pipe(clientSocket);
@@ -201,9 +235,31 @@ export async function startPublicMode({
     proxyError(clientSocket, "502 Bad Gateway", failureMessage);
   });
 
-  const controlServer = createControlServer(pool);
-  const actualProxyPort = await listen(proxyServer, listenHost, listenPort);
-  const actualControlPort = await listen(controlServer, listenHost, controlPort);
+  const controlServer = createControlServer(pool, controlToken);
+  controlServer.on("connection", trackSocket);
+
+  // Bind first so the sidecar is the authority on port ownership. This avoids
+  // reserving nothing during the potentially long initial discovery pass.
+  const actualProxyPort = await listen(proxyServer, listenHost, listenPort, "browser proxy");
+  let actualControlPort;
+  try {
+    actualControlPort = await listen(controlServer, listenHost, controlPort, "control");
+  } catch (error) {
+    closing = true;
+    destroyOpenSockets();
+    await closeServer(proxyServer);
+    openSockets.clear();
+    throw error;
+  }
+
+  // A transient source outage or an unlucky sample should not prevent the app
+  // from starting. Come up with an empty pool the user can retry from the
+  // control UI rather than crashing the engine on the very first refresh.
+  try {
+    await pool.refresh();
+  } catch (error) {
+    logger.warn?.(`Initial proxy discovery failed; starting with an empty pool. ${error.message}`);
+  }
   const refreshTimer = setInterval(() => {
     pool.refresh().catch((error) => logger.warn?.(`Background refresh failed: ${error.message}`));
   }, Math.max(1, refreshMinutes) * 60_000);
@@ -219,14 +275,23 @@ export async function startPublicMode({
     proxyPort: actualProxyPort,
     controlPort: actualControlPort,
     async close() {
-      clearInterval(refreshTimer);
-      const proxyClosed = new Promise((resolve) => proxyServer.close(() => resolve()));
-      const controlClosed = new Promise((resolve) => controlServer.close(() => resolve()));
-      for (const socket of openSockets) socket.destroy();
-      openSockets.clear();
-      proxyServer.closeAllConnections?.();
-      controlServer.closeAllConnections?.();
-      await Promise.all([proxyClosed, controlClosed]);
+      if (closePromise) return await closePromise;
+      closing = true;
+      closePromise = (async () => {
+        clearInterval(refreshTimer);
+        const proxyClosed = closeServer(proxyServer);
+        const controlClosed = closeServer(controlServer);
+        destroyOpenSockets();
+        // Node recommends invoking this after close() to avoid accepting a
+        // connection between the force-close and stop-listening operations.
+        proxyServer.closeAllConnections?.();
+        controlServer.closeAllConnections?.();
+        await Promise.all([proxyClosed, controlClosed]);
+        // Catch any connection callback already queued when close() began.
+        destroyOpenSockets();
+        openSockets.clear();
+      })();
+      return await closePromise;
     },
   };
 }

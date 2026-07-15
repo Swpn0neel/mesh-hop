@@ -1,5 +1,6 @@
 import net from "node:net";
 import { isPublicAddress } from "../net-policy.js";
+import { userAgent } from "./user-agent.js";
 
 export const DEFAULT_SOURCE_URLS = Object.freeze([
   "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/countries/{COUNTRY}/data.txt",
@@ -38,7 +39,7 @@ export function parseProxyLines(text) {
 
 async function fetchSource(url, timeoutMs) {
   const response = await fetch(url, {
-    headers: { "user-agent": "MeshHop-Public/0.2 (+personal proxy validator)" },
+    headers: { "user-agent": userAgent("+personal proxy validator") },
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
