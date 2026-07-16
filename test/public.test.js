@@ -146,6 +146,19 @@ test("a late success from an old exit cannot switch the active IP back", () => {
   assert.equal(oldExit.successes, 1);
 });
 
+test("selectExit switches directly to a specific verified exit", () => {
+  const first = { protocol: "http", host: "8.8.8.8", port: 8080, exitIp: "1.1.1.1" };
+  const second = { protocol: "socks5", host: "9.9.9.9", port: 1080, exitIp: "2.2.2.2" };
+  const pool = new PublicProxyPool({ autoFallback: true });
+  pool.proxies = [first, second];
+  assert.equal(pool.selectExit({ protocol: "socks5", host: "9.9.9.9", port: 1080 }).exitIp, "2.2.2.2");
+  assert.equal(pool.current.exitIp, "2.2.2.2");
+  // An exit not in the current pool (e.g. dropped by a refresh) is rejected
+  // without disturbing the active selection.
+  assert.equal(pool.selectExit({ protocol: "http", host: "10.0.0.1", port: 1 }), null);
+  assert.equal(pool.current.exitIp, "2.2.2.2");
+});
+
 test("fallback pools retain only distinct observed exit IPs", () => {
   const distinct = uniqueExitIps([
     { host: "first", exitIp: "216.38.28.47" },
@@ -229,6 +242,48 @@ test("desktop control endpoints require the configured bearer token", async () =
 
     const unauthorizedRotate = await fetch(`${base}/api/rotate`, { method: "POST" });
     assert.equal(unauthorizedRotate.status, 401);
+  } finally {
+    await app.close();
+  }
+});
+
+test("the /api/select route switches to a specific exit and rejects unknown ones", async () => {
+  const app = await startPublicMode({
+    sourceUrls: ["http://127.0.0.1:1/none"],
+    listenPort: 0,
+    controlPort: 0,
+    refreshMinutes: 60,
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  try {
+    const first = { protocol: "http", host: "8.8.8.8", port: 8080, exitIp: "1.1.1.1" };
+    const second = { protocol: "socks5", host: "9.9.9.9", port: 1080, exitIp: "2.2.2.2" };
+    app.pool.proxies = [first, second];
+    app.pool.currentIndex = 0;
+    const base = `http://127.0.0.1:${app.controlPort}`;
+
+    const selected = await fetch(`${base}/api/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ protocol: "socks5", host: "9.9.9.9", port: 1080 }),
+    });
+    assert.equal(selected.status, 200);
+    assert.equal((await selected.json()).current.exitIp, "2.2.2.2");
+
+    const unknown = await fetch(`${base}/api/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ protocol: "http", host: "10.0.0.1", port: 1 }),
+    });
+    assert.equal(unknown.status, 404);
+    assert.equal(app.pool.current.exitIp, "2.2.2.2");
+
+    const malformed = await fetch(`${base}/api/select`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ protocol: "http" }),
+    });
+    assert.equal(malformed.status, 400);
   } finally {
     await app.close();
   }

@@ -226,6 +226,18 @@ export class PublicProxyPool extends EventEmitter {
     return this.current;
   }
 
+  // Switch directly to a specific verified exit, e.g. one the user picked from
+  // the pool list, rather than stepping through the ordered rotation.
+  selectExit({ protocol, host, port }) {
+    const targetKey = proxyKey({ protocol, host, port: Number(port) });
+    const index = this.proxies.findIndex((item) => proxyKey(item) === targetKey);
+    if (index === -1) return null;
+    this.currentIndex = index;
+    this.emit("updated", this.status());
+    this.logger.info?.(`Selected ${proxyKey(this.current)} (${this.current.exitIp})`);
+    return this.current;
+  }
+
   reportSuccess(proxy) {
     const index = this.proxies.findIndex((item) => proxyKey(item) === proxyKey(proxy));
     if (index === -1) return;

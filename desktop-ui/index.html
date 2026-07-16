@@ -42,7 +42,7 @@
           </svg>
         </div>
 
-        <div class="hero">
+        <div class="hero themed-scroll">
           <!-- STOPPED -->
           <section class="view view-idle" id="idleView">
             <div class="route-glyph" aria-hidden="true">
@@ -59,7 +59,7 @@
             <p class="hero-sub">MeshHop finds, measures, and verifies a live public exit, then opens a hardened browser through the fastest one.</p>
 
             <div class="region-field" id="regionField">
-              <select class="country-native" id="country" aria-hidden="true" tabindex="-1">
+              <select class="native-select" id="country" aria-hidden="true" tabindex="-1">
                 <option value="US">United States</option>
                 <option value="GB">United Kingdom</option>
                 <option value="CA">Canada</option>
@@ -101,7 +101,11 @@
 
             <details class="options" id="options">
               <summary>
-                <svg class="opt-gear" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.4" /><path d="M8 1.5v2m0 9v2m6.5-6.5h-2m-9 0h-2m11-4.6-1.4 1.4m-6.6 6.6-1.4 1.4m9.4 0-1.4-1.4m-6.6-6.6L3.1 3.1" /></svg>
+                <!-- Lucide "settings" icon (lucide.dev, ISC license) -->
+                <svg class="opt-gear" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
                 Advanced options
                 <svg class="opt-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6.5 4 4 4-4" /></svg>
               </summary>
@@ -127,15 +131,26 @@
 
                 <div class="opt-grid">
                   <div class="opt-row">
-                    <label class="opt-label" for="poolSize">Fallback pool</label>
-                    <div class="select-wrap select-sm">
-                      <select id="poolSize">
-                        <option value="4">4 exits</option>
-                        <option value="8" selected>8 exits</option>
-                        <option value="12">12 exits</option>
-                      </select>
+                    <span class="opt-label" id="poolSizeLabel">Fallback pool</span>
+                    <select class="native-select" id="poolSize" aria-hidden="true" tabindex="-1">
+                      <option value="4">4 exits</option>
+                      <option value="8" selected>8 exits</option>
+                      <option value="12">12 exits</option>
+                    </select>
+                    <button
+                      class="select-trigger"
+                      id="poolSizeButton"
+                      type="button"
+                      role="combobox"
+                      aria-haspopup="listbox"
+                      aria-expanded="false"
+                      aria-controls="poolSizeList"
+                      aria-labelledby="poolSizeLabel poolSizeButtonText"
+                      popovertarget="poolSizePopover"
+                    >
+                      <span class="select-trigger-value" id="poolSizeButtonText">8 exits</span>
                       <svg class="select-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6.5 4 4 4-4" /></svg>
-                    </div>
+                    </button>
                   </div>
                   <label class="opt-row toggle-field" for="autoFallback">
                     <span class="opt-label">Automatic failover</span>
@@ -271,13 +286,13 @@
                 <button class="dtab-action hidden" id="clearLogs" type="button">Clear</button>
               </div>
 
-              <div class="tabpanel" id="exitsPanel" role="tabpanel" aria-labelledby="tabExits">
+              <div class="tabpanel themed-scroll" id="exitsPanel" role="tabpanel" aria-labelledby="tabExits">
                 <div class="pool-list" id="poolList">
                   <div class="pool-empty"><strong>No verified exits yet</strong><span>Connect to build a measured fallback pool.</span></div>
                 </div>
               </div>
 
-              <div class="tabpanel hidden" id="activityPanel" role="tabpanel" aria-labelledby="tabActivity" hidden>
+              <div class="tabpanel themed-scroll hidden" id="activityPanel" role="tabpanel" aria-labelledby="tabActivity" hidden>
                 <div class="logs" id="logs"><div class="log dim"><span>00:00:00</span><p>Waiting to start.</p></div></div>
               </div>
             </div>
@@ -287,8 +302,12 @@
 
     </div>
 
-    <div class="country-popover" id="countryPopover" popover="auto">
+    <div class="country-popover themed-scroll" id="countryPopover" popover="auto">
       <div class="country-list" id="countryList" role="listbox" aria-label="Exit region"></div>
+    </div>
+
+    <div class="select-popover themed-scroll" id="poolSizePopover" popover="auto">
+      <div class="select-list" id="poolSizeList" role="listbox" aria-label="Fallback pool size"></div>
     </div>
 
     <div class="toast" id="toast" role="status"></div>

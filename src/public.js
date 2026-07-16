@@ -34,6 +34,22 @@ async function act(name){document.querySelector('#summary').textContent=name==='
 load();setInterval(load,5000);
 </script>`;
 
+async function readJsonBody(request, maxBytes = 4_096) {
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    bytes += chunk.length;
+    if (bytes > maxBytes) throw new Error("Request body too large");
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("Request body must be valid JSON");
+  }
+}
+
 function createControlServer(pool, controlToken) {
   return http.createServer(async (request, response) => {
     if (controlToken && request.headers.authorization !== `Bearer ${controlToken}`) {
@@ -58,6 +74,31 @@ function createControlServer(pool, controlToken) {
     }
     if (request.method === "POST" && url.pathname === "/api/rotate") {
       pool.rotate();
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(pool.status()));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/select") {
+      let body;
+      try {
+        body = await readJsonBody(request);
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: error.message }));
+        return;
+      }
+      const { protocol, host, port } = body;
+      if (typeof protocol !== "string" || typeof host !== "string" || !Number.isInteger(port)) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "protocol, host, and port are required" }));
+        return;
+      }
+      const selected = pool.selectExit({ protocol, host, port });
+      if (!selected) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "That exit is no longer in the verified pool", ...pool.status() }));
+        return;
+      }
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(pool.status()));
       return;

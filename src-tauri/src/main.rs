@@ -377,7 +377,12 @@ async fn engine_status(state: State<'_, AppState>) -> Result<DesktopStatus, Stri
     }
 }
 
-async fn post_control(state: &AppState, action: &str, timeout: u64) -> Result<Value, String> {
+async fn post_control(
+    state: &AppState,
+    action: &str,
+    timeout: u64,
+    body: Option<&Value>,
+) -> Result<Value, String> {
     let (port, control_token) = {
         let inner = state.runtime.lock();
         (
@@ -394,9 +399,19 @@ async fn post_control(state: &AppState, action: &str, timeout: u64) -> Result<Va
     if let Some(token) = control_token {
         request = request.bearer_auth(token);
     }
+    if let Some(body) = body {
+        request = request.json(body);
+    }
     let response = request.send().await.map_err(|error| error.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("Engine returned HTTP {}", response.status()));
+        let status = response.status();
+        let message = response.json::<Value>().await.ok().and_then(|value| {
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+        return Err(message.unwrap_or_else(|| format!("Engine returned HTTP {status}")));
     }
     response
         .json::<Value>()
@@ -406,14 +421,38 @@ async fn post_control(state: &AppState, action: &str, timeout: u64) -> Result<Va
 
 #[tauri::command]
 async fn rotate_exit(state: State<'_, AppState>) -> Result<Value, String> {
-    post_control(&state, "rotate", 10).await
+    post_control(&state, "rotate", 10, None).await
 }
 
 #[tauri::command]
 async fn refresh_exits(state: State<'_, AppState>) -> Result<Value, String> {
     // Steady-state speed measurement with a second confirming sample makes a full
     // refresh take longer; allow generous headroom before the request times out.
-    post_control(&state, "refresh", 180).await
+    post_control(&state, "refresh", 180, None).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectExitRequest {
+    protocol: String,
+    host: String,
+    port: u16,
+}
+
+#[tauri::command]
+async fn select_exit(
+    state: State<'_, AppState>,
+    protocol: String,
+    host: String,
+    port: u16,
+) -> Result<Value, String> {
+    let body = serde_json::to_value(SelectExitRequest {
+        protocol,
+        host,
+        port,
+    })
+    .map_err(|error| error.to_string())?;
+    post_control(&state, "select", 10, Some(&body)).await
 }
 
 fn first_existing(candidates: Vec<(&'static str, PathBuf)>) -> Option<(&'static str, PathBuf)> {
@@ -655,6 +694,7 @@ fn main() {
             stop_engine,
             engine_status,
             rotate_exit,
+            select_exit,
             refresh_exits,
             open_browser
         ])

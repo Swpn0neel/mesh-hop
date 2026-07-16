@@ -47,7 +47,7 @@ for (const id of [
   "tbState", "tbStateText", "minButton", "maxButton", "closeButton",
   "idleRegion", "idleFlag", "regionField", "country", "countryButton", "countryButtonText", "countryPopover", "countryList",
   "startButton", "options", "rankMode", "rankHelp",
-  "sampleSize", "sampleValue", "poolSize", "autoFallback",
+  "sampleSize", "sampleValue", "poolSize", "poolSizeButton", "poolSizeButtonText", "poolSizePopover", "poolSizeList", "autoFallback",
   "connectingRegion", "pipeline", "pipelineLive", "elapsedTime", "cancelButton",
   "exitFlag", "exitCountry", "liveBadge", "exitIp", "exitIsp", "exitNet",
   "statSpeed", "statLatency", "statConsistency", "verifiedCount", "rankSummary",
@@ -71,9 +71,8 @@ let toastTimer;
 let maxStep = -1;
 let connectionStartedAt = 0;
 let elapsedTimer;
-let countryOptionElements = [];
-let countryTypeahead = "";
-let countryTypeaheadTimer;
+let countryPicker;
+let poolSizePicker;
 const STEPS = ["fetch", "test", "speed", "confirm"];
 
 /* ------------------------------------------------------------------ *
@@ -105,112 +104,203 @@ function setButtonBusy(button, busy) {
   else button.removeAttribute("aria-busy");
 }
 
-function buildCountryPicker() {
-  const fragment = document.createDocumentFragment();
-  countryOptionElements = Array.from(els.country.options, (option) => {
-    const item = document.createElement("div");
-    item.className = "country-option";
-    item.id = `countryOption-${option.value}`;
-    item.dataset.value = option.value;
-    item.dataset.label = option.textContent;
-    item.setAttribute("role", "option");
-    item.setAttribute("aria-selected", "false");
-    item.tabIndex = -1;
+/* ------------------------------------------------------------------ *
+ * Generic themed listbox picker
+ *
+ * Drives a hidden native <select> from a button trigger + popover listbox,
+ * so the exit-region and fallback-pool-size fields share one implementation
+ * (positioning, keyboard nav, typeahead) instead of two copies of the same
+ * dropdown logic.
+ * ------------------------------------------------------------------ */
+function createListboxPicker({
+  nativeSelect,
+  trigger,
+  popover,
+  list,
+  buildOption,
+  onSync,
+  topInset = 12,
+  estimatedRowHeight = 40,
+  tabForward,
+  tabBack,
+}) {
+  let optionElements = [];
+  let typeahead = "";
+  let typeaheadTimer;
 
-    const code = document.createElement("span");
-    code.className = "country-option-code";
-    code.textContent = countryCode(option.value);
-
-    const name = document.createElement("span");
-    name.className = "country-option-name";
-    name.textContent = option.textContent;
-
-    const check = document.createElement("span");
-    check.className = "country-option-check";
-    check.setAttribute("aria-hidden", "true");
-    check.textContent = "✓";
-
-    item.append(code, name, check);
-    fragment.append(item);
-    return item;
-  });
-  els.countryList.replaceChildren(fragment);
-}
-
-function countryPopoverIsOpen() {
-  return els.countryPopover.matches(":popover-open");
-}
-
-function syncCountryPicker() {
-  const selected = els.country.value;
-  els.countryButtonText.textContent = countryName(selected);
-  for (const item of countryOptionElements) {
-    const active = item.dataset.value === selected;
-    item.setAttribute("aria-selected", String(active));
+  function build() {
+    const fragment = document.createDocumentFragment();
+    optionElements = Array.from(nativeSelect.options, (option) => {
+      const item = document.createElement("div");
+      item.className = "select-option";
+      item.dataset.value = option.value;
+      item.dataset.label = option.textContent;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", "false");
+      item.tabIndex = -1;
+      buildOption(item, option);
+      fragment.append(item);
+      return item;
+    });
+    list.replaceChildren(fragment);
   }
-}
 
-function focusCountryOption(index) {
-  const nextIndex = Math.max(0, Math.min(countryOptionElements.length - 1, index));
-  for (const item of countryOptionElements) item.tabIndex = -1;
-  const option = countryOptionElements[nextIndex];
-  if (!option) return;
-  option.tabIndex = 0;
-  option.focus({ preventScroll: true });
-  option.scrollIntoView({ block: "nearest" });
-}
-
-function positionCountryPopover() {
-  if (!countryPopoverIsOpen()) return;
-  const anchor = els.regionField.getBoundingClientRect();
-  const viewportPadding = 12;
-  const gap = 8;
-  const menuMaxHeight = 400;
-  const width = Math.min(anchor.width, window.innerWidth - viewportPadding * 2);
-  const left = Math.max(viewportPadding, Math.min(anchor.left, window.innerWidth - viewportPadding - width));
-
-  els.countryPopover.style.width = `${width}px`;
-  els.countryPopover.style.maxHeight = `${menuMaxHeight}px`;
-
-  const naturalHeight = Math.min(els.countryList.scrollHeight + 14, menuMaxHeight);
-  const roomAbove = anchor.top - viewportPadding - gap;
-  const roomBelow = window.innerHeight - anchor.bottom - viewportPadding - gap;
-  const placeBelow = roomBelow >= Math.min(naturalHeight, 240) || roomBelow >= roomAbove;
-  const availableHeight = Math.max(96, placeBelow ? roomBelow : roomAbove);
-  const height = Math.min(naturalHeight, availableHeight);
-  const top = placeBelow ? anchor.bottom + gap : Math.max(viewportPadding, anchor.top - gap - height);
-
-  els.countryPopover.dataset.side = placeBelow ? "below" : "above";
-  els.countryPopover.style.left = `${left}px`;
-  els.countryPopover.style.top = `${top}px`;
-  els.countryPopover.style.maxHeight = `${height}px`;
-}
-
-function chooseCountry(value) {
-  if (els.country.disabled) return;
-  if (els.country.value !== value) {
-    els.country.value = value;
-    els.country.dispatchEvent(new Event("change", { bubbles: true }));
+  function isOpen() {
+    return popover.matches(":popover-open");
   }
-  if (countryPopoverIsOpen()) els.countryPopover.hidePopover();
-  els.countryButton.focus({ preventScroll: true });
-}
 
-function handleCountryTypeahead(event) {
-  if (event.key.length !== 1 || event.altKey || event.ctrlKey || event.metaKey) return false;
-  clearTimeout(countryTypeaheadTimer);
-  countryTypeahead += event.key.toLocaleLowerCase();
-  countryTypeaheadTimer = setTimeout(() => { countryTypeahead = ""; }, 600);
-
-  const activeIndex = Math.max(0, countryOptionElements.indexOf(document.activeElement));
-  const ordered = [...countryOptionElements.slice(activeIndex + 1), ...countryOptionElements.slice(0, activeIndex + 1)];
-  let match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(countryTypeahead));
-  if (!match && countryTypeahead.length > 1) {
-    countryTypeahead = event.key.toLocaleLowerCase();
-    match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(countryTypeahead));
+  function sync() {
+    const selected = nativeSelect.value;
+    for (const item of optionElements) item.setAttribute("aria-selected", String(item.dataset.value === selected));
+    onSync?.(selected);
   }
-  if (match) focusCountryOption(countryOptionElements.indexOf(match));
-  return true;
+
+  function focusOption(index) {
+    const nextIndex = Math.max(0, Math.min(optionElements.length - 1, index));
+    for (const item of optionElements) item.tabIndex = -1;
+    const option = optionElements[nextIndex];
+    if (!option) return;
+    option.tabIndex = 0;
+    option.focus({ preventScroll: true });
+    option.scrollIntoView({ block: "nearest" });
+  }
+
+  function position() {
+    const anchor = trigger.getBoundingClientRect();
+    const viewportPadding = 12;
+    const gap = 8;
+    const menuMaxHeight = 420;
+    const width = Math.min(anchor.width, window.innerWidth - viewportPadding * 2);
+    const left = Math.max(viewportPadding, Math.min(anchor.left, window.innerWidth - viewportPadding - width));
+    popover.style.width = `${width}px`;
+
+    // Before the popover is shown it is display:none, so scrollHeight reads 0 —
+    // fall back to a per-row estimate so the first frame lands in the right
+    // place and the entrance animation knows which way to open.
+    const measured = list.scrollHeight || optionElements.length * estimatedRowHeight;
+    const naturalHeight = Math.min(measured + 14, menuMaxHeight);
+    const roomAbove = anchor.top - topInset - gap;
+    const roomBelow = window.innerHeight - anchor.bottom - viewportPadding - gap;
+
+    // Open where the whole list fits without scrolling; only scroll as a last resort.
+    const placeBelow = roomBelow >= naturalHeight ? true : roomAbove >= naturalHeight ? false : roomBelow >= roomAbove;
+    const availableHeight = Math.max(120, placeBelow ? roomBelow : roomAbove);
+    const height = Math.min(naturalHeight, availableHeight);
+    const top = placeBelow ? anchor.bottom + gap : Math.max(topInset, anchor.top - gap - height);
+
+    popover.dataset.side = placeBelow ? "below" : "above";
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+    popover.style.maxHeight = `${height}px`;
+  }
+
+  function choose(value) {
+    if (nativeSelect.disabled) return;
+    if (nativeSelect.value !== value) {
+      nativeSelect.value = value;
+      nativeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    if (isOpen()) popover.hidePopover();
+    trigger.focus({ preventScroll: true });
+  }
+
+  function handleTypeahead(event) {
+    if (event.key.length !== 1 || event.altKey || event.ctrlKey || event.metaKey) return false;
+    clearTimeout(typeaheadTimer);
+    typeahead += event.key.toLocaleLowerCase();
+    typeaheadTimer = setTimeout(() => { typeahead = ""; }, 600);
+
+    const activeIndex = Math.max(0, optionElements.indexOf(document.activeElement));
+    const ordered = [...optionElements.slice(activeIndex + 1), ...optionElements.slice(0, activeIndex + 1)];
+    let match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(typeahead));
+    if (!match && typeahead.length > 1) {
+      typeahead = event.key.toLocaleLowerCase();
+      match = ordered.find((item) => item.dataset.label.toLocaleLowerCase().startsWith(typeahead));
+    }
+    if (match) focusOption(optionElements.indexOf(match));
+    return true;
+  }
+
+  function setDisabled(disabled) {
+    trigger.disabled = disabled;
+    if (disabled && isOpen()) popover.hidePopover();
+  }
+
+  function wire() {
+    trigger.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      if (!isOpen()) popover.showPopover();
+      else focusOption(optionElements.findIndex((item) => item.dataset.value === nativeSelect.value));
+    });
+
+    // Place it before it paints so it opens in the right spot and direction —
+    // no flash, and the entrance animation matches the chosen side.
+    popover.addEventListener("beforetoggle", (event) => {
+      if (event.newState === "open") position();
+    });
+
+    popover.addEventListener("toggle", () => {
+      const open = isOpen();
+      trigger.setAttribute("aria-expanded", String(open));
+      if (!open) {
+        typeahead = "";
+        for (const item of optionElements) item.tabIndex = -1;
+        return;
+      }
+      position();
+      requestAnimationFrame(() => {
+        const selectedIndex = optionElements.findIndex((item) => item.dataset.value === nativeSelect.value);
+        focusOption(selectedIndex);
+      });
+    });
+
+    list.addEventListener("click", (event) => {
+      const option = event.target.closest(".select-option");
+      if (option) choose(option.dataset.value);
+    });
+
+    list.addEventListener("keydown", (event) => {
+      const activeIndex = Math.max(0, optionElements.indexOf(document.activeElement));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        focusOption((activeIndex + direction + optionElements.length) % optionElements.length);
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        focusOption(event.key === "Home" ? 0 : optionElements.length - 1);
+        return;
+      }
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        choose(optionElements[activeIndex].dataset.value);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        popover.hidePopover();
+        trigger.focus({ preventScroll: true });
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault();
+        popover.hidePopover();
+        const target = (event.shiftKey ? tabBack : tabForward) ?? trigger;
+        target.focus({ preventScroll: true });
+        return;
+      }
+      if (handleTypeahead(event)) event.preventDefault();
+    });
+
+    const repositionIfOpen = () => { if (isOpen()) position(); };
+    window.addEventListener("resize", repositionIfOpen);
+    document.querySelector(".hero").addEventListener("scroll", repositionIfOpen, { passive: true });
+  }
+
+  build();
+  return { sync, setDisabled, wire, isOpen };
 }
 
 function render() {
@@ -226,15 +316,16 @@ function render() {
   els.idleRegion.textContent = COUNTRIES[code]?.the ?? countryName(code);
   els.idleFlag.textContent = countryCode(code);
   els.connectingRegion.textContent = code;
-  syncCountryPicker();
+  countryPicker.sync();
+  poolSizePicker.sync();
 
   // Lock config while running/starting
   const locked = phase === "running" || phase === "starting";
   els.country.disabled = locked;
-  els.countryButton.disabled = locked;
-  if (locked && countryPopoverIsOpen()) els.countryPopover.hidePopover();
+  countryPicker.setDisabled(locked);
   els.sampleSize.disabled = locked;
   els.poolSize.disabled = locked;
+  poolSizePicker.setDisabled(locked);
   els.autoFallback.disabled = locked;
   for (const b of els.rankMode.querySelectorAll("button")) b.disabled = locked;
   els.startButton.disabled = actionBusy;
@@ -315,10 +406,19 @@ function renderPool(pool) {
     return;
   }
 
+  // Rows are buttons: clicking a verified exit switches to it directly,
+  // instead of only being able to step through the pool with Rotate.
+  const canSelect = status.phase === "running" && !actionBusy;
   for (const proxy of proxies) {
     const active = current && proxy.protocol === current.protocol && proxy.host === current.host && proxy.port === current.port;
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = `pool-row${active ? " active" : ""}`;
+    row.disabled = active || !canSelect;
+    if (active) row.setAttribute("aria-current", "true");
+    const label = proxy.exitIp || proxy.host;
+    row.title = active ? `${label} is the active exit` : `Switch to ${label}`;
+    row.addEventListener("click", () => selectExit(proxy));
 
     const state = document.createElement("span");
     state.className = "pool-status";
@@ -479,6 +579,17 @@ async function connect() {
   });
 }
 
+async function selectExit(proxy) {
+  await withAction("select", `Switched to ${proxy.exitIp || proxy.host}`, async () => {
+    status.pool = await backend.invoke("select_exit", {
+      protocol: proxy.protocol,
+      host: proxy.host,
+      port: proxy.port,
+    });
+    render();
+  });
+}
+
 async function updateStatus() {
   try {
     const next = await backend.invoke("engine_status");
@@ -489,69 +600,63 @@ async function updateStatus() {
   }
 }
 
-function wireCountryPicker() {
-  els.countryButton.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
-    if (!countryPopoverIsOpen()) els.countryPopover.showPopover();
-    else focusCountryOption(countryOptionElements.findIndex((item) => item.dataset.value === els.country.value));
-  });
+function createCountryPicker() {
+  return createListboxPicker({
+    nativeSelect: els.country,
+    trigger: els.countryButton,
+    popover: els.countryPopover,
+    list: els.countryList,
+    topInset: 52, // keep clear of the custom titlebar
+    estimatedRowHeight: 42,
+    tabForward: els.startButton,
+    buildOption(item, option) {
+      const code = document.createElement("span");
+      code.className = "country-option-code";
+      code.textContent = countryCode(option.value);
 
-  els.countryPopover.addEventListener("toggle", () => {
-    const open = countryPopoverIsOpen();
-    els.countryButton.setAttribute("aria-expanded", String(open));
-    if (!open) {
-      countryTypeahead = "";
-      for (const item of countryOptionElements) item.tabIndex = -1;
-      return;
-    }
-    positionCountryPopover();
-    requestAnimationFrame(() => {
-      const selectedIndex = countryOptionElements.findIndex((item) => item.dataset.value === els.country.value);
-      focusCountryOption(selectedIndex);
-    });
-  });
+      const name = document.createElement("span");
+      name.className = "country-option-name select-option-name";
+      name.textContent = option.textContent;
 
-  els.countryList.addEventListener("click", (event) => {
-    const option = event.target.closest(".country-option");
-    if (option) chooseCountry(option.dataset.value);
-  });
+      const check = document.createElement("span");
+      check.className = "country-option-check select-option-check";
+      check.setAttribute("aria-hidden", "true");
+      check.textContent = "✓";
 
-  els.countryList.addEventListener("keydown", (event) => {
-    const activeIndex = Math.max(0, countryOptionElements.indexOf(document.activeElement));
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      const direction = event.key === "ArrowDown" ? 1 : -1;
-      focusCountryOption((activeIndex + direction + countryOptionElements.length) % countryOptionElements.length);
-      return;
-    }
-    if (event.key === "Home" || event.key === "End") {
-      event.preventDefault();
-      focusCountryOption(event.key === "Home" ? 0 : countryOptionElements.length - 1);
-      return;
-    }
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      chooseCountry(countryOptionElements[activeIndex].dataset.value);
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      els.countryPopover.hidePopover();
-      els.countryButton.focus({ preventScroll: true });
-      return;
-    }
-    if (event.key === "Tab") {
-      event.preventDefault();
-      els.countryPopover.hidePopover();
-      (event.shiftKey ? els.countryButton : els.startButton).focus({ preventScroll: true });
-      return;
-    }
-    if (handleCountryTypeahead(event)) event.preventDefault();
+      item.classList.add("country-option");
+      item.append(code, name, check);
+    },
+    onSync(selected) {
+      els.countryButtonText.textContent = countryName(selected);
+    },
   });
+}
 
-  window.addEventListener("resize", positionCountryPopover);
-  document.querySelector(".hero").addEventListener("scroll", positionCountryPopover, { passive: true });
+function createPoolSizePicker() {
+  return createListboxPicker({
+    nativeSelect: els.poolSize,
+    trigger: els.poolSizeButton,
+    popover: els.poolSizePopover,
+    list: els.poolSizeList,
+    topInset: 12,
+    estimatedRowHeight: 36,
+    tabForward: els.autoFallback,
+    buildOption(item, option) {
+      const name = document.createElement("span");
+      name.className = "select-option-name";
+      name.textContent = option.textContent;
+
+      const check = document.createElement("span");
+      check.className = "select-option-check";
+      check.setAttribute("aria-hidden", "true");
+      check.textContent = "✓";
+
+      item.append(name, check);
+    },
+    onSync() {
+      els.poolSizeButtonText.textContent = els.poolSize.selectedOptions[0]?.textContent ?? els.poolSize.value;
+    },
+  });
 }
 
 /* ------------------------------------------------------------------ *
@@ -562,8 +667,12 @@ function wire() {
   els.maxButton.addEventListener("click", () => backend.toggleMaximize?.());
   els.closeButton.addEventListener("click", () => backend.close?.());
 
+  countryPicker = createCountryPicker();
+  poolSizePicker = createPoolSizePicker();
   els.country.addEventListener("change", render);
-  wireCountryPicker();
+  els.poolSize.addEventListener("change", render);
+  countryPicker.wire();
+  poolSizePicker.wire();
 
   els.rankMode.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-rank]");
@@ -675,7 +784,6 @@ function wire() {
 async function init() {
   els.version.textContent = `v${__APP_VERSION__}`;
   els.rankHelp.textContent = RANK_HELP[selectedRank];
-  buildCountryPicker();
   wire();
   render();
 
@@ -792,6 +900,15 @@ function mockBackend() {
           state.pool.current = p[i];
           emit("pool-updated", state.pool);
         }
+        return Promise.resolve(state.pool);
+      }
+      if (cmd === "select_exit") {
+        const match = state.pool?.proxies.find(
+          (proxy) => proxy.protocol === args.protocol && proxy.host === args.host && proxy.port === args.port,
+        );
+        if (!match) return Promise.reject(new Error("That exit is no longer in the verified pool"));
+        state.pool.current = match;
+        emit("pool-updated", state.pool);
         return Promise.resolve(state.pool);
       }
       if (cmd === "refresh_exits") {
