@@ -728,11 +728,17 @@ function wire() {
     });
   });
 
-  // Drawer
-  els.drawerHandle.addEventListener("click", () => {
-    const open = els.drawer.classList.toggle("open");
+  // Drawer — the tab buttons themselves double as the collapsed handle: click
+  // a closed or inactive tab to open/switch to it, click the already-open
+  // active tab again to collapse. The trailing caret button is a plain
+  // open/close toggle that doesn't touch which tab is selected.
+  const setDrawerOpen = (open) => {
+    els.drawer.classList.toggle("open", open);
     els.drawerHandle.setAttribute("aria-expanded", String(open));
     els.drawerBody.setAttribute("aria-hidden", String(!open));
+  };
+  els.drawerHandle.addEventListener("click", () => {
+    setDrawerOpen(!els.drawer.classList.contains("open"));
   });
   const selectTab = (tab) => {
     const exits = tab === "exits";
@@ -747,14 +753,17 @@ function wire() {
     els.tabExits.tabIndex = exits ? 0 : -1;
     els.tabActivity.tabIndex = exits ? -1 : 0;
     els.clearLogs.classList.toggle("hidden", exits);
-    if (!els.drawer.classList.contains("open")) {
-      els.drawer.classList.add("open");
-      els.drawerHandle.setAttribute("aria-expanded", "true");
-      els.drawerBody.setAttribute("aria-hidden", "false");
-    }
+    setDrawerOpen(true);
   };
-  els.tabExits.addEventListener("click", () => selectTab("exits"));
-  els.tabActivity.addEventListener("click", () => selectTab("activity"));
+  const activateTab = (tab, tabButton) => {
+    if (els.drawer.classList.contains("open") && tabButton.classList.contains("active")) {
+      setDrawerOpen(false);
+      return;
+    }
+    selectTab(tab);
+  };
+  els.tabExits.addEventListener("click", () => activateTab("exits", els.tabExits));
+  els.tabActivity.addEventListener("click", () => activateTab("activity", els.tabActivity));
   for (const tab of [els.tabExits, els.tabActivity]) {
     tab.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
