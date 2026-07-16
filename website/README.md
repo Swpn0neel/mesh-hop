@@ -19,7 +19,7 @@ npx tsc --noEmit
 npm run build
 ```
 
-The downloadable Windows installer is served from `public/downloads/`. Example IPs and measurements in the product preview are explicitly labeled as illustrative data.
+The downloadable Windows installer is served by the stable GitHub Release asset URL, so the website follows the latest published installer without storing a binary in the site repository. Example IPs and measurements in the product preview are explicitly labeled as illustrative data.
 
 ## Stack
 

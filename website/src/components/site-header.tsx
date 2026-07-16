@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
+import { GITHUB_REPOSITORY_URL, WINDOWS_INSTALLER_URL } from "@/lib/release";
 
 function DownloadArrow() {
   return (
@@ -21,7 +22,7 @@ function GitHubIcon() {
 }
 
 const GITHUB_URL =
-  process.env.NEXT_PUBLIC_GITHUB_URL ?? "https://github.com/search?q=MeshHop&type=repositories";
+  process.env.NEXT_PUBLIC_GITHUB_URL ?? GITHUB_REPOSITORY_URL;
 
 export function SiteHeader() {
   const [isScrolled, setIsScrolled] = useState(false);
@@ -100,7 +101,7 @@ export function SiteHeader() {
           </a>
           <a
             className="nav-download"
-            href="/downloads/MeshHop_0.3.2_x64-setup.exe"
+            href={WINDOWS_INSTALLER_URL}
             download
             aria-label="Download MeshHop for Windows"
           >

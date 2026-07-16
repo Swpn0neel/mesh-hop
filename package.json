@@ -1,6 +1,6 @@
 {
   "name": "meshhop",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Tauri desktop app for automatic regional proxy discovery and browser routing",
   "private": true,
   "type": "module",
@@ -15,6 +15,7 @@
     "desktop:dev": "npm run sidecar:build && tauri dev",
     "desktop:build": "npm run sidecar:build && tauri build",
     "desktop:build:debug": "npm run sidecar:build && tauri build --debug",
+    "release:stage": "node scripts/stage-release.mjs",
     "lint": "eslint .",
     "version:sync": "node scripts/sync-version.mjs",
     "version:check": "node scripts/sync-version.mjs --check",

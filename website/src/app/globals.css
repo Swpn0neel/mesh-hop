@@ -2525,10 +2525,26 @@ ul {
 }
 
 .download-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   margin-top: 14px;
   color: var(--faint);
   font-family: var(--font-data);
   font-size: var(--text-caption);
+}
+
+.download-detail a {
+  color: var(--ink-soft);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  transition: color 180ms ease, text-decoration-color 180ms ease;
+}
+
+.download-detail a:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
 }
 
 .site-footer {

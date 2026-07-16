@@ -5,7 +5,7 @@
 //   node scripts/sync-version.mjs --check  # exit non-zero if anything is stale
 //
 // Run --check in CI so a version bump can never drift between package.json,
-// tauri.conf.json, Cargo.toml, runtime user-agent, and README links again.
+// tauri.conf.json, Cargo.toml, runtime user-agent, the README, and the website.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -35,7 +35,11 @@ const targets = [
   },
   {
     file: "README.md",
-    update: (text) => text.replace(/MeshHop_\d+\.\d+\.\d+_x64/g, `MeshHop_${version}_x64`),
+    update: (text) => text.replace(/Current stable release:\s*`[^`]+`/, `Current stable release: \`${version}\``),
+  },
+  {
+    file: "website/src/lib/release.ts",
+    update: (text) => text.replace(/(RELEASE_VERSION\s*=\s*")[^"]+(")/, `$1${version}$2`),
   },
 ];
 

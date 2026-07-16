@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useEffect, useState } from "react";
+import { RELEASE_VERSION } from "@/lib/release";
 
 function BrowserIcon() {
   return (
@@ -104,7 +105,7 @@ export function MeshHopWindow() {
         <div className="app-title">
           <Image className="app-raster-logo" src="/meshhop-logo.png" width={44} height={44} alt="" />
           <span>MeshHop</span>
-          <span className="app-version">0.3.2</span>
+          <span className="app-version">{RELEASE_VERSION}</span>
         </div>
         <div className="titlebar-state"><span />Connected</div>
         <div className="window-actions" aria-hidden="true">
