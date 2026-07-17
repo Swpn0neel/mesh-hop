@@ -16,7 +16,7 @@ This document records product and engineering improvements shipped against the [
 | Settings persistence | **Done** | Country, rank mode, sample size, pool size, auto-failover stored in `localStorage` (`meshhop.prefs.v1`). |
 | Stronger Firefox anti-leak prefs | **Done** | WebRTC disabled; speculative connections off; TRR mode 5; ICE no-host / proxy-only. |
 | Port preflight | **Done** | Desktop checks loopback **17877** / **17878** before spawning the engine; clear message if another MeshHop/engine holds them. |
-| Doc sync | **Done** | `DESKTOP.md` → 0.3.3; `PRODUCT.md` / `SECURITY.md` / `README.md` updated; `DESKTOP.md` removed from `.gitignore`. |
+| Doc sync | **Done** | `DESKTOP.md` → 0.4.0; `PRODUCT.md` / `SECURITY.md` / `README.md` updated; `DESKTOP.md` removed from `.gitignore`. |
 
 ### Phase A — files touched
 

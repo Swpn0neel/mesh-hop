@@ -6,7 +6,7 @@ MeshHop is a desktop app that automatically discovers working **public proxies**
 
 ## Desktop app — recommended
 
-Current stable release: `0.3.3`
+Current stable release: `0.4.0`
 
 MeshHop ships as a self-contained Tauri 2 desktop application. Installed users do **not** need Node.js, npm, Rust, or a terminal.
 
