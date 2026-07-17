@@ -13,13 +13,15 @@
     "desktop:prepare": "npm run desktop:frontend && npm run browser-assets:verify",
     "desktop:frontend:dev": "vite --config desktop-ui/vite.config.js",
     "desktop:dev": "npm run sidecar:build && tauri dev",
-    "desktop:build": "npm run sidecar:build && tauri build",
-    "desktop:build:debug": "npm run sidecar:build && tauri build --debug",
+    "desktop:bundle": "tauri build",
+    "desktop:bundle:debug": "tauri build --debug",
+    "desktop:build": "npm run sidecar:build && npm run desktop:bundle",
+    "desktop:build:debug": "npm run sidecar:build && npm run desktop:bundle:debug",
     "release:stage": "node scripts/stage-release.mjs",
     "lint": "eslint .",
     "version:sync": "node scripts/sync-version.mjs",
     "version:check": "node scripts/sync-version.mjs --check",
-    "test": "node --test test/env.test.js test/http-upgrade.test.js test/net-policy.test.js test/public.test.js test/throughput.test.js",
+    "test": "node --test test/env.test.js test/http-upgrade.test.js test/net-policy.test.js test/public.test.js test/socks-server.test.js test/throughput.test.js",
     "test:public": "node --test test/public-live.test.js"
   },
   "engines": {
