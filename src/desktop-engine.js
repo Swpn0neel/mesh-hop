@@ -47,8 +47,19 @@ async function main() {
     autoFallback: booleanEnv("AUTO_FALLBACK", true),
     minThroughputMbps: integerEnv("MIN_THROUGHPUT_MBPS", 2, { minimum: 0 }),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
+    heartbeatSeconds: integerEnv("HEARTBEAT_SECONDS", 45, { minimum: 0 }),
+    socksPort: integerEnv("SOCKS_PORT", 0, { minimum: 0 }),
+    blockedExitIps: (process.env.BLOCKED_EXIT_IPS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
     controlToken: process.env.CONTROL_TOKEN || null,
     logger,
+    // Attach before the initial refresh so structured progress reaches the UI.
+    onPool(pool) {
+      pool.on("progress", (progress) => emit("progress", progress));
+      pool.on("updated", (status) => emit("pool-updated", { status }));
+    },
   };
 
   emit("starting", {
@@ -58,10 +69,10 @@ async function main() {
     controlPort: options.controlPort,
   });
   app = await startPublicMode(options);
-  app.pool.on("updated", (status) => emit("pool-updated", { status }));
   emit("ready", {
     proxyPort: app.proxyPort,
     controlPort: app.controlPort,
+    socksPort: app.socksPort,
     status: app.pool.status(),
   });
 }

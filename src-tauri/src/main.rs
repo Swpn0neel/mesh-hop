@@ -11,8 +11,11 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tauri::menu::{Menu, MenuItem};
 use tauri::path::BaseDirectory;
-use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
     ShellExt,
@@ -25,6 +28,7 @@ struct DesktopStatus {
     message: String,
     proxy_port: Option<u16>,
     control_port: Option<u16>,
+    socks_port: Option<u16>,
     pool: Option<Value>,
 }
 
@@ -40,6 +44,7 @@ struct RuntimeState {
     message: String,
     proxy_port: Option<u16>,
     control_port: Option<u16>,
+    socks_port: Option<u16>,
     control_token: Option<String>,
     generation: u64,
 }
@@ -52,6 +57,7 @@ impl Default for RuntimeState {
             message: "Ready to find an exit".into(),
             proxy_port: None,
             control_port: None,
+            socks_port: None,
             control_token: None,
             generation: 0,
         }
@@ -80,6 +86,37 @@ struct StartConfig {
     max_candidates: u16,
     pool_size: u8,
     auto_fallback: bool,
+    #[serde(default)]
+    blocked_exit_ips: Vec<String>,
+    // Opt-in local SOCKS5 listener for non-browser apps. Off unless the user
+    // explicitly turns it on in Advanced options.
+    #[serde(default)]
+    socks_enabled: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheck {
+    current_version: String,
+    latest_version: String,
+    update_available: bool,
+    download_url: String,
+    release_url: String,
+}
+
+fn parse_semver(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    match (parse_semver(latest), parse_semver(current)) {
+        (Some(left), Some(right)) => left > right,
+        _ => false,
+    }
 }
 
 fn snapshot(runtime: &RuntimeState, pool: Option<Value>) -> DesktopStatus {
@@ -88,6 +125,7 @@ fn snapshot(runtime: &RuntimeState, pool: Option<Value>) -> DesktopStatus {
         message: runtime.message.clone(),
         proxy_port: runtime.proxy_port,
         control_port: runtime.control_port,
+        socks_port: runtime.socks_port,
         pool,
     }
 }
@@ -105,6 +143,24 @@ fn emit_log(app: &AppHandle, level: &str, message: impl Into<String>) {
             message: message.into(),
         },
     );
+}
+
+/// Best-effort Windows toast. Failures are ignored so notifications never break the engine path.
+fn notify_user(app: &AppHandle, title: &str, body: impl AsRef<str>) {
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body.as_ref())
+        .show();
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 fn process_engine_line(
@@ -140,6 +196,24 @@ fn process_engine_line(
             if inner.generation == generation && inner.phase == "starting" {
                 inner.message = message.into();
             }
+            drop(inner);
+            // Only automatic failover (not manual Rotate) while the window may be tray-hidden.
+            if message.contains("switching to a verified fallback") {
+                notify_user(app, "MeshHop rotated exit", message);
+            }
+        }
+        "progress" => {
+            // Structured discovery stages from the engine (fetch/probe/speed/confirm/commit).
+            let message = parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Verifying route…");
+            let mut inner = runtime.lock();
+            if inner.generation == generation && inner.phase == "starting" {
+                inner.message = message.into();
+            }
+            drop(inner);
+            let _ = app.emit("engine-progress", parsed);
         }
         "ready" => {
             let status = parsed.get("status");
@@ -151,11 +225,22 @@ fn process_engine_line(
                 .and_then(|value| value.get("country"))
                 .and_then(Value::as_str)
                 .unwrap_or("selected");
+            let discovery_error = status
+                .and_then(|value| value.get("lastDiscoveryError"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let socks_port = parsed
+                .get("socksPort")
+                .and_then(Value::as_u64)
+                .and_then(|port| u16::try_from(port).ok());
             let mut inner = runtime.lock();
             if inner.generation == generation {
                 inner.phase = "running".into();
+                inner.socks_port = socks_port;
                 inner.message = if has_exit {
                     format!("{country} exit is active")
+                } else if let Some(error) = discovery_error {
+                    error.chars().take(220).collect()
                 } else {
                     "No working exit yet — use Refresh to try again".into()
                 };
@@ -164,6 +249,13 @@ fn process_engine_line(
             emit_state(app, runtime);
             if let Some(status) = status {
                 let _ = app.emit("pool-updated", status.clone());
+            }
+            if !has_exit {
+                notify_user(
+                    app,
+                    "MeshHop",
+                    "No verified exit yet — open MeshHop and use Refresh, or try another region.",
+                );
             }
         }
         "pool-updated" => {
@@ -184,6 +276,11 @@ fn process_engine_line(
             drop(inner);
             emit_log(app, "error", message);
             emit_state(app, runtime);
+            notify_user(
+                app,
+                "MeshHop needs attention",
+                message.lines().next().unwrap_or(message),
+            );
         }
         _ => emit_log(app, "info", trimmed),
     }
@@ -213,6 +310,15 @@ async fn start_engine(
     // dedicated profile valid across engine and app restarts.
     let proxy_port = 17877;
     let control_port = 17878;
+    assert_loopback_port_free(proxy_port, "browser proxy")?;
+    assert_loopback_port_free(control_port, "control")?;
+    let socks_port = if config.socks_enabled {
+        let port = 17879;
+        assert_loopback_port_free(port, "SOCKS")?;
+        Some(port)
+    } else {
+        None
+    };
     let control_token = Alphanumeric.sample_string(&mut rand::rng(), 48);
     let command = app
         .shell()
@@ -229,6 +335,7 @@ async fn start_engine(
         inner.message = format!("Testing published {country} exits…");
         inner.proxy_port = Some(proxy_port);
         inner.control_port = Some(control_port);
+        inner.socks_port = socks_port;
         inner.control_token = Some(control_token.clone());
         inner.generation
     };
@@ -239,6 +346,7 @@ async fn start_engine(
         .env("RANK_MODE", &config.rank_mode)
         .env("LISTEN_PORT", proxy_port.to_string())
         .env("CONTROL_PORT", control_port.to_string())
+        .env("SOCKS_PORT", socks_port.unwrap_or(0).to_string())
         .env("CONTROL_TOKEN", &control_token)
         .env("MAX_CANDIDATES", config.max_candidates.to_string())
         .env("POOL_SIZE", config.pool_size.to_string())
@@ -250,7 +358,18 @@ async fn start_engine(
         .env("PROBE_TIMEOUT_MS", "7000")
         .env("CONNECT_TIMEOUT_MS", "5000")
         .env("MAX_ATTEMPTS", "3")
-        .env("REFRESH_MINUTES", "10");
+        .env("REFRESH_MINUTES", "10")
+        .env("HEARTBEAT_SECONDS", "45")
+        .env(
+            "BLOCKED_EXIT_IPS",
+            config
+                .blocked_exit_ips
+                .iter()
+                .map(|ip| ip.trim())
+                .filter(|ip| !ip.is_empty())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
 
     let (mut receiver, child) = match command.spawn() {
         Ok(value) => value,
@@ -260,6 +379,7 @@ async fn start_engine(
             inner.message = error.to_string();
             inner.proxy_port = None;
             inner.control_port = None;
+            inner.socks_port = None;
             inner.control_token = None;
             return Err(error.to_string());
         }
@@ -302,6 +422,7 @@ async fn start_engine(
                         inner.child = None;
                         inner.proxy_port = None;
                         inner.control_port = None;
+                        inner.socks_port = None;
                         inner.control_token = None;
                         if inner.phase != "stopped" && inner.phase != "error" {
                             inner.phase = "error".into();
@@ -328,6 +449,7 @@ fn stop_engine(app: AppHandle, state: State<'_, AppState>) -> Result<DesktopStat
         inner.message = "Proxy stopped".into();
         inner.proxy_port = None;
         inner.control_port = None;
+        inner.socks_port = None;
         inner.control_token = None;
         inner.child.take()
     };
@@ -453,6 +575,127 @@ async fn select_exit(
     })
     .map_err(|error| error.to_string())?;
     post_control(&state, "select", 10, Some(&body)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlockExitRequest {
+    exit_ip: String,
+}
+
+#[tauri::command]
+async fn block_exit(state: State<'_, AppState>, exit_ip: String) -> Result<Value, String> {
+    let body = serde_json::to_value(BlockExitRequest {
+        exit_ip: exit_ip.trim().to_string(),
+    })
+    .map_err(|error| error.to_string())?;
+    post_control(&state, "block", 10, Some(&body)).await
+}
+
+#[tauri::command]
+async fn unblock_exit(state: State<'_, AppState>, exit_ip: String) -> Result<Value, String> {
+    let body = serde_json::to_value(BlockExitRequest {
+        exit_ip: exit_ip.trim().to_string(),
+    })
+    .map_err(|error| error.to_string())?;
+    post_control(&state, "unblock", 10, Some(&body)).await
+}
+
+#[tauri::command]
+async fn check_for_update(state: State<'_, AppState>) -> Result<UpdateCheck, String> {
+    const MANIFEST_URL: &str =
+        "https://github.com/Swpn0neel/mesh-hop/releases/latest/download/meshhop-release.json";
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let response = state
+        .client
+        .get(MANIFEST_URL)
+        .timeout(Duration::from_secs(8))
+        .header("user-agent", format!("MeshHop-Desktop/{current_version}"))
+        .send()
+        .await
+        .map_err(|error| format!("Update check failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Update check returned HTTP {}", response.status()));
+    }
+    let manifest = response
+        .json::<Value>()
+        .await
+        .map_err(|error| format!("Update manifest was invalid: {error}"))?;
+    let latest_version = manifest
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or(&current_version)
+        .to_string();
+    let download_url = manifest
+        .pointer("/assets/windows/nsis/latestUrl")
+        .and_then(Value::as_str)
+        .unwrap_or(
+            "https://github.com/Swpn0neel/mesh-hop/releases/latest/download/MeshHop-windows-x64-setup.exe",
+        )
+        .to_string();
+    let release_url = manifest
+        .get("latestReleaseUrl")
+        .and_then(Value::as_str)
+        .or_else(|| manifest.get("releaseUrl").and_then(Value::as_str))
+        .unwrap_or("https://github.com/Swpn0neel/mesh-hop/releases/latest")
+        .to_string();
+    Ok(UpdateCheck {
+        update_available: is_newer_version(&latest_version, &current_version),
+        current_version,
+        latest_version,
+        download_url,
+        release_url,
+    })
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("Only http(s) URLs can be opened".into());
+    }
+    // Windows: use cmd start so we do not need an extra opener crate.
+    #[cfg(target_os = "windows")]
+    {
+        ProcessCommand::new("cmd")
+            .args(["/C", "start", "", trimmed])
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        ProcessCommand::new("open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        ProcessCommand::new("xdg-open")
+            .arg(trimmed)
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
+    Err("Opening URLs is not supported on this platform".into())
+}
+
+/// Fail fast with a clear Windows-facing message when MeshHop's fixed loopback
+/// ports are already taken (usually a previous engine still running).
+fn assert_loopback_port_free(port: u16, purpose: &str) -> Result<(), String> {
+    match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(_) => Err(format!(
+            "MeshHop {purpose} port {port} is already in use on 127.0.0.1. \
+Close the other MeshHop window or end any leftover meshhop-engine process in Task Manager, then try again."
+        )),
+    }
 }
 
 fn first_existing(candidates: Vec<(&'static str, PathBuf)>) -> Option<(&'static str, PathBuf)> {
@@ -619,9 +862,18 @@ user_pref("network.proxy.ssl_port", {proxy_port});
 user_pref("network.proxy.share_proxy_settings", true);
 user_pref("network.proxy.no_proxies_on", "localhost, 127.0.0.1");
 user_pref("network.dns.disablePrefetch", true);
+user_pref("network.dns.disableIPv6", false);
 user_pref("network.prefetch-next", false);
+user_pref("network.http.speculative-parallel-limit", 0);
+// Disable WebRTC entirely in this profile so STUN cannot leak the real IP.
+// MeshHop only routes HTTPS/TCP; real-time media is out of scope.
+user_pref("media.peerconnection.enabled", false);
 user_pref("media.peerconnection.ice.default_address_only", true);
+user_pref("media.peerconnection.ice.no_host", true);
+user_pref("media.peerconnection.ice.proxy_only", true);
 user_pref("media.peerconnection.ice.proxy_only_if_behind_proxy", true);
+// Prefer the browser not opening a parallel DoH path that bypasses the proxy story.
+user_pref("network.trr.mode", 5);
 user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
@@ -688,6 +940,7 @@ fn open_browser(app: AppHandle, state: State<'_, AppState>) -> Result<String, St
 fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             start_engine,
@@ -695,9 +948,64 @@ fn main() {
             engine_status,
             rotate_exit,
             select_exit,
+            block_exit,
+            unblock_exit,
             refresh_exits,
-            open_browser
+            open_browser,
+            check_for_update,
+            open_external_url
         ])
+        .setup(|app| {
+            // Close button hides to tray so the route can keep running in the background.
+            if let Some(window) = app.get_webview_window("main") {
+                let window_handle = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = window_handle.hide();
+                    }
+                });
+            }
+
+            let show_item = MenuItem::with_id(app, "show", "Show MeshHop", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            let icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| "MeshHop window icon is missing for the tray".to_string())?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(icon)
+                .menu(&menu)
+                .tooltip("MeshHop")
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main_window(app),
+                    "quit" => {
+                        let state = app.state::<AppState>();
+                        let child = { state.runtime.lock().child.take() };
+                        if let Some(child) = child {
+                            let _ = child.kill();
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("failed to build MeshHop");
 
