@@ -13,9 +13,21 @@ const hostingPattern = new RegExp(
 
 const consumerPattern = new RegExp(
   [
+    // United States / North America
     "comcast", "xfinity", "charter", "spectrum", "verizon", "at&t", "att internet",
     "cox", "t-mobile", "tmobile", "centurylink", "lumen", "frontier", "mediacom",
-    "optimum", "cable", "broadband", "wireless", "fiber", "telecom", "residential",
+    "optimum", "rogers", "bell canada", "telus", "shaw",
+    // Europe / UK
+    "bt ", "british telecom", "virgin media", "sky broadband", "talktalk", "plusnet",
+    "deutsche telekom", "telekom deutschland", "vodafone", "o2 ", "orange", "free sas",
+    "proximus", "kpn", "ziggo", "t-mobile netherlands", "swisscom", "telecom italia",
+    "tim spa", "telefonica", "movistar", "telenor", "telia", "elisa",
+    // Asia-Pacific
+    "ntt", "softbank", "kddi", "docomo", "singtel", "starhub", "m1 limited",
+    "telstra", "optus", "tpg internet", "iiNet", "chunghwa", "sk telecom", "kt corp",
+    // Generic residential signals
+    "cable", "broadband", "wireless", "fiber", "fibre", "telecom", "residential",
+    "home internet", "ftth", "dsl",
   ].join("|"),
   "i",
 );

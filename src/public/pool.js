@@ -1,9 +1,18 @@
 import { EventEmitter } from "node:events";
 import { compareProxyQuality, enrichProxyNetworks } from "./network.js";
-import { benchmarkProxyThroughput, mapConcurrent, probeBrowserReadiness, probeProxy } from "./probe.js";
+import {
+  benchmarkProxyThroughput,
+  classifyProbeError,
+  formatFailureSummary,
+  mapConcurrent,
+  probeBrowserReadiness,
+  probeProxy,
+  tallyFailure,
+} from "./probe.js";
 import { measureDownloadThroughput } from "./tunnel.js";
 import {
   DEFAULT_SOURCE_URLS,
+  adaptiveMaxCandidates,
   fetchPublicProxyCandidates,
   proxyKey,
   shuffledSample,
@@ -42,6 +51,7 @@ export class PublicProxyPool extends EventEmitter {
     rankMode = "balanced",
     autoFallback = true,
     minThroughputMbps = 2,
+    blockedExitIps = [],
     logger = console,
   } = {}) {
     super();
@@ -63,11 +73,39 @@ export class PublicProxyPool extends EventEmitter {
     this.refreshing = null;
     this.lastRefresh = null;
     this.sourceCount = 0;
+    this.lastDiscoveryError = null;
+    this.lastFailureSummary = null;
+    this.sourceStats = null;
+    this._heartbeatRunning = false;
+    this.blockedExitIps = new Set(
+      (Array.isArray(blockedExitIps) ? blockedExitIps : [])
+        .map((ip) => String(ip || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+  }
+
+  #normalizeExitIp(exitIp) {
+    return String(exitIp || "").trim().toLowerCase();
+  }
+
+  isBlocked(exitIp) {
+    return this.blockedExitIps.has(this.#normalizeExitIp(exitIp));
   }
 
   #speedTimeoutMs() {
     // Allow for the proxy handshake on top of the fixed warm-up + measurement window.
     return Math.max(SPEED_TIMEOUT_MS, this.probeTimeoutMs + 5_000);
+  }
+
+  #emitProgress(stage, { done = 0, total = 0, message } = {}) {
+    const payload = {
+      stage,
+      done,
+      total,
+      message: message || stage,
+    };
+    this.emit("progress", payload);
+    if (message) this.logger.info?.(message);
   }
 
   async refresh() {
@@ -84,25 +122,61 @@ export class PublicProxyPool extends EventEmitter {
     this.emit("refresh-state", true);
     try {
       const previousCurrent = this.current;
+      this.#emitProgress("fetch", {
+        done: 0,
+        total: this.sourceUrls?.length || 0,
+        message: `Downloading published ${this.country} proxy lists…`,
+      });
       const all = await fetchPublicProxyCandidates({
         country: this.country,
         sourceUrls: this.sourceUrls,
         logger: this.logger,
       });
       this.sourceCount = all.length;
-      const candidates = shuffledSample(all, this.maxCandidates);
-      this.logger.info?.(`Testing ${candidates.length} of ${all.length} published ${this.country} candidates...`);
+      this.sourceStats = all.sourceStats || null;
+      const sampleSize = adaptiveMaxCandidates(all.length, this.maxCandidates, this.country);
+      const candidates = shuffledSample(all, sampleSize);
+      this.#emitProgress("fetch", {
+        done: this.sourceUrls?.length || 1,
+        total: this.sourceUrls?.length || 1,
+        message: `Fetched ${all.length} published ${this.country} candidates; sampling ${candidates.length}…`,
+      });
 
+      this.#emitProgress("probe", {
+        done: 0,
+        total: candidates.length,
+        message: `Testing ${candidates.length} of ${all.length} published ${this.country} candidates…`,
+      });
+
+      const probeFailures = new Map();
+      let probeHits = 0;
       const working = await mapConcurrent(
         candidates,
         this.concurrency,
         (proxy) => probeProxy(proxy, { country: this.country, timeoutMs: this.probeTimeoutMs }),
-        (proxy, count) => this.logger.info?.(`  ${count}. ${proxyKey(proxy)} -> ${proxy.exitIp} (${proxy.latencyMs} ms)`),
+        (proxy, count) => {
+          probeHits = count;
+          this.logger.info?.(`  ${count}. ${proxyKey(proxy)} -> ${proxy.exitIp} (${proxy.latencyMs} ms)`);
+          // Throttle structured progress so the UI is not flooded with 160 events.
+          if (count === 1 || count === candidates.length || count % 5 === 0) {
+            this.#emitProgress("probe", {
+              done: count,
+              total: candidates.length,
+              message: `Verified ${count} working exit${count === 1 ? "" : "s"} of ${candidates.length} tested…`,
+            });
+          }
+        },
+        {
+          onFailure: (error) => {
+            tallyFailure(probeFailures, error);
+          },
+        },
       );
       if (working.length === 0) {
-        throw new Error(
-          `None of ${candidates.length} sampled public proxies produced a verified ${this.country} HTTPS exit`,
-        );
+        const summary = formatFailureSummary(probeFailures, candidates.length);
+        this.lastFailureSummary = summary;
+        this.lastDiscoveryError = `None of ${candidates.length} sampled public proxies produced a verified ${this.country} HTTPS exit. ${summary}`.trim();
+        throw new Error(this.lastDiscoveryError);
       }
 
       const firstPass = await enrichProxyNetworks(working, this.logger);
@@ -111,19 +185,39 @@ export class PublicProxyPool extends EventEmitter {
       // Published lists frequently contain many ports that all lead to the same
       // egress address. Measure diverse exits, not duplicate front doors.
       const speedCandidates = uniqueExitIps(firstPass).slice(0, Math.max(this.poolSize * 4, 24));
-      this.logger.info?.(
-        `Measuring sustained throughput on the ${speedCandidates.length} strongest candidates (steady-state window)...`,
-      );
+      this.#emitProgress("speed", {
+        done: 0,
+        total: speedCandidates.length,
+        message: `Measuring sustained throughput on the ${speedCandidates.length} strongest candidates (steady-state window)…`,
+      });
+      let speedHits = 0;
+      const speedFailures = new Map();
       const benchmarked = await mapConcurrent(
         speedCandidates,
         Math.min(this.concurrency, 8),
         (proxy) => benchmarkProxyThroughput(proxy, { timeoutMs: this.#speedTimeoutMs() }),
-        (proxy, count) => this.logger.info?.(
-          `  speed ${count}. ${proxyKey(proxy)} -> ${proxy.throughputMbps} Mbps`,
-        ),
+        (proxy, count) => {
+          speedHits = count;
+          this.logger.info?.(
+            `  speed ${count}. ${proxyKey(proxy)} -> ${proxy.throughputMbps} Mbps`,
+          );
+          this.#emitProgress("speed", {
+            done: count,
+            total: speedCandidates.length,
+            message: `Speed-tested ${count}/${speedCandidates.length} exits…`,
+          });
+        },
+        {
+          onFailure: (error) => {
+            tallyFailure(speedFailures, error);
+          },
+        },
       );
       if (benchmarked.length === 0) {
-        throw new Error("Responsive proxies failed the sustained throughput test; refresh to sample another set");
+        const summary = formatFailureSummary(speedFailures, speedCandidates.length);
+        this.lastFailureSummary = summary;
+        this.lastDiscoveryError = `Responsive proxies failed the sustained throughput test; refresh to sample another set. ${summary}`.trim();
+        throw new Error(this.lastDiscoveryError);
       }
       // Enforce a usable-speed floor. Prioritizing speed means dropping exits
       // measured below the floor, but never emptying the pool over it: if no exit
@@ -137,8 +231,13 @@ export class PublicProxyPool extends EventEmitter {
       }
       ranked.sort((left, right) => compareProxyQuality(left, right, this.rankMode));
       const confirmationCandidates = ranked.slice(0, Math.max(this.poolSize * 3, this.poolSize));
-      this.logger.info?.(`Confirming the ${confirmationCandidates.length} best candidates across independent HTTPS hosts...`);
+      this.#emitProgress("confirm", {
+        done: 0,
+        total: confirmationCandidates.length,
+        message: `Confirming the ${confirmationCandidates.length} best candidates across independent HTTPS hosts…`,
+      });
       const firstByKey = new Map(confirmationCandidates.map((proxy) => [proxyKey(proxy), proxy]));
+      const confirmFailures = new Map();
       const confirmed = await mapConcurrent(
         confirmationCandidates,
         Math.min(this.concurrency, 12),
@@ -169,9 +268,24 @@ export class PublicProxyPool extends EventEmitter {
             firstLatencyMs: firstByKey.get(proxyKey(proxy)).latencyMs,
           };
         },
+        (proxy, count) => {
+          this.#emitProgress("confirm", {
+            done: count,
+            total: confirmationCandidates.length,
+            message: `Confirmed ${count}/${confirmationCandidates.length} exits…`,
+          });
+        },
+        {
+          onFailure: (error) => {
+            tallyFailure(confirmFailures, error);
+          },
+        },
       );
       if (confirmed.length === 0) {
-        throw new Error("Working proxies failed their second stability check; refresh to sample another set");
+        const summary = formatFailureSummary(confirmFailures, confirmationCandidates.length);
+        this.lastFailureSummary = summary;
+        this.lastDiscoveryError = `Working proxies failed their second stability check; refresh to sample another set. ${summary}`.trim();
+        throw new Error(this.lastDiscoveryError);
       }
       const enriched = await enrichProxyNetworks(confirmed, this.logger);
       enriched.sort((left, right) => compareProxyQuality(left, right, this.rankMode));
@@ -179,11 +293,22 @@ export class PublicProxyPool extends EventEmitter {
       // A refresh can overlap live browser traffic. Preserve the exit that is
       // authoritative at commit time, not the one that happened to be current
       // when the refresh began.
+      this.#emitProgress("commit", {
+        done: 0,
+        total: 1,
+        message: "Selecting the best verified exit…",
+      });
       const activeBeforeCommit = this.current ?? previousCurrent;
       const activeKey = activeBeforeCommit ? proxyKey(activeBeforeCommit) : null;
-      this.proxies = uniqueExitIps(enriched).slice(0, this.poolSize);
+      const distinct = uniqueExitIps(enriched);
+      const unblocked = distinct.filter((proxy) => !this.isBlocked(proxy.exitIp));
+      // Prefer ASN diversity so the fallback pool is not eight ports on one ASN.
+      this.proxies = diversifyByAsn(unblocked, this.poolSize);
       if (this.proxies.length === 0) {
-        throw new Error("Confirmed proxies did not contain a usable distinct exit IP");
+        this.lastDiscoveryError = this.blockedExitIps.size > 0
+          ? "Confirmed proxies were all on the blocklist or lacked a usable distinct exit IP"
+          : "Confirmed proxies did not contain a usable distinct exit IP";
+        throw new Error(this.lastDiscoveryError);
       }
       let preservedIndex = this.proxies.findIndex((proxy) => proxyKey(proxy) === activeKey);
       if (activeBeforeCommit && preservedIndex < 0 && !this.autoFallback) {
@@ -196,11 +321,22 @@ export class PublicProxyPool extends EventEmitter {
       }
       this.currentIndex = preservedIndex >= 0 ? preservedIndex : 0;
       this.lastRefresh = new Date().toISOString();
-      this.logger.info?.(
-        `Selected ${proxyKey(this.current)} (${this.current.exitIp}, ${this.current.latencyMs} ms, ${this.current.throughputMbps} Mbps); ${this.proxies.length} verified exits retained`,
-      );
+      this.lastDiscoveryError = null;
+      this.lastFailureSummary = probeHits > 0
+        ? `Probe hits ${probeHits}/${candidates.length}; speed hits ${speedHits}/${speedCandidates.length}.`
+        : null;
+      this.#emitProgress("commit", {
+        done: 1,
+        total: 1,
+        message: `Selected ${proxyKey(this.current)} (${this.current.exitIp}, ${this.current.latencyMs} ms, ${this.current.throughputMbps} Mbps); ${this.proxies.length} verified exits retained`,
+      });
       this.emit("updated", this.status());
       return this.proxies;
+    } catch (error) {
+      if (!this.lastDiscoveryError) {
+        this.lastDiscoveryError = error?.message || String(error);
+      }
+      throw error;
     } finally {
       this.emit("refresh-state", false);
     }
@@ -220,9 +356,17 @@ export class PublicProxyPool extends EventEmitter {
 
   rotate() {
     if (this.proxies.length === 0) return null;
-    this.currentIndex = (this.currentIndex + 1) % this.proxies.length;
+    const start = this.currentIndex;
+    for (let step = 1; step <= this.proxies.length; step += 1) {
+      const index = (start + step) % this.proxies.length;
+      if (!this.isBlocked(this.proxies[index].exitIp)) {
+        this.currentIndex = index;
+        this.emit("updated", this.status());
+        this.logger.info?.(`Rotated to ${proxyKey(this.current)} (${this.current.exitIp})`);
+        return this.current;
+      }
+    }
     this.emit("updated", this.status());
-    this.logger.info?.(`Rotated to ${proxyKey(this.current)} (${this.current.exitIp})`);
     return this.current;
   }
 
@@ -232,10 +376,37 @@ export class PublicProxyPool extends EventEmitter {
     const targetKey = proxyKey({ protocol, host, port: Number(port) });
     const index = this.proxies.findIndex((item) => proxyKey(item) === targetKey);
     if (index === -1) return null;
+    if (this.isBlocked(this.proxies[index].exitIp)) return null;
     this.currentIndex = index;
     this.emit("updated", this.status());
     this.logger.info?.(`Selected ${proxyKey(this.current)} (${this.current.exitIp})`);
     return this.current;
+  }
+
+  // Permanently exclude an exit IP from this session's pool (and future refreshes
+  // until the blocklist is cleared). If the active exit is blocked, rotate away.
+  blockExit(exitIp) {
+    const key = this.#normalizeExitIp(exitIp);
+    if (!key) return this.status();
+    this.blockedExitIps.add(key);
+    const wasCurrent = this.current && this.#normalizeExitIp(this.current.exitIp) === key;
+    this.proxies = this.proxies.filter((proxy) => this.#normalizeExitIp(proxy.exitIp) !== key);
+    if (this.proxies.length === 0) {
+      this.currentIndex = 0;
+    } else if (wasCurrent || this.currentIndex >= this.proxies.length) {
+      this.currentIndex = 0;
+    }
+    this.logger.info?.(`Blocked exit IP ${key}; ${this.proxies.length} exits remain in the pool`);
+    this.emit("updated", this.status());
+    return this.status();
+  }
+
+  unblockExit(exitIp) {
+    const key = this.#normalizeExitIp(exitIp);
+    if (!key) return this.status();
+    this.blockedExitIps.delete(key);
+    this.emit("updated", this.status());
+    return this.status();
   }
 
   reportSuccess(proxy) {
@@ -267,6 +438,31 @@ export class PublicProxyPool extends EventEmitter {
     }
   }
 
+  // Lightweight liveness check for the active exit. Used by the background
+  // heartbeat so a "live" route is re-verified without waiting for browser traffic.
+  async heartbeat() {
+    if (this.refreshing || this._heartbeatRunning) return null;
+    const proxy = this.current;
+    if (!proxy) return null;
+    this._heartbeatRunning = true;
+    try {
+      await probeProxy(proxy, {
+        country: this.country,
+        timeoutMs: this.probeTimeoutMs,
+      });
+      this.reportSuccess(proxy);
+      return { ok: true, proxy };
+    } catch (error) {
+      this.logger.warn?.(
+        `Heartbeat failed for ${proxyKey(proxy)} (${classifyProbeError(error)}): ${error.message}`,
+      );
+      this.reportFailure(proxy);
+      return { ok: false, proxy, error: error.message };
+    } finally {
+      this._heartbeatRunning = false;
+    }
+  }
+
   status() {
     return {
       country: this.country,
@@ -275,6 +471,10 @@ export class PublicProxyPool extends EventEmitter {
       lastRefresh: this.lastRefresh,
       refreshing: Boolean(this.refreshing),
       autoFallback: this.autoFallback,
+      lastDiscoveryError: this.lastDiscoveryError,
+      lastFailureSummary: this.lastFailureSummary,
+      sourceStats: this.sourceStats,
+      blockedExitIps: [...this.blockedExitIps],
       current: this.current,
       proxies: this.proxies,
     };
@@ -289,4 +489,40 @@ export function uniqueExitIps(proxies) {
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Fill a pool preferring distinct ASNs first (round-robin by network quality
+ * order), then backfill with remaining exits. Input should already be sorted
+ * best-first and deduplicated by exit IP.
+ */
+export function diversifyByAsn(proxies, limit) {
+  const size = Math.max(0, Number(limit) || 0);
+  if (size === 0 || !Array.isArray(proxies) || proxies.length === 0) return [];
+  if (proxies.length <= size) return proxies.slice(0, size);
+
+  const buckets = new Map();
+  const order = [];
+  for (const proxy of proxies) {
+    const asnKey = proxy.network?.asn != null ? `asn:${proxy.network.asn}` : `ip:${proxy.exitIp}`;
+    if (!buckets.has(asnKey)) {
+      buckets.set(asnKey, []);
+      order.push(asnKey);
+    }
+    buckets.get(asnKey).push(proxy);
+  }
+
+  const selected = [];
+  let progress = true;
+  while (selected.length < size && progress) {
+    progress = false;
+    for (const key of order) {
+      const bucket = buckets.get(key);
+      if (!bucket?.length) continue;
+      selected.push(bucket.shift());
+      progress = true;
+      if (selected.length >= size) break;
+    }
+  }
+  return selected;
 }

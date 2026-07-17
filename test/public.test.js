@@ -5,9 +5,17 @@ import net from "node:net";
 import test from "node:test";
 import { httpsUpgradeLocation, redirectHttpRequestToHttps } from "../src/http-upgrade.js";
 import { classifyConnection, compareProxyQuality } from "../src/public/network.js";
-import { parseCloudflareTrace } from "../src/public/probe.js";
-import { parseProxyLines } from "../src/public/sources.js";
-import { PublicProxyPool, uniqueExitIps } from "../src/public/pool.js";
+import {
+  classifyProbeError,
+  formatFailureSummary,
+  parseCloudflareTrace,
+  tallyFailure,
+} from "../src/public/probe.js";
+import {
+  adaptiveMaxCandidates,
+  parseProxyLines,
+} from "../src/public/sources.js";
+import { diversifyByAsn, PublicProxyPool, uniqueExitIps } from "../src/public/pool.js";
 import { connectViaProxy } from "../src/public/tunnel.js";
 import { USER_AGENT } from "../src/public/user-agent.js";
 import { startPublicMode } from "../src/public.js";
@@ -77,8 +85,39 @@ broken
   ]);
 });
 
+test("parser accepts bare host:port lines with an explicit default protocol", () => {
+  const parsed = parseProxyLines("8.8.8.8:8080\n1.1.1.1:1080", { defaultProtocol: "socks5" });
+  assert.deepEqual(parsed, [
+    { protocol: "socks5", host: "8.8.8.8", port: 8080 },
+    { protocol: "socks5", host: "1.1.1.1", port: 1080 },
+  ]);
+});
+
+test("adaptiveMaxCandidates samples more aggressively for lower-supply countries", () => {
+  assert.equal(adaptiveMaxCandidates(500, 160, "US"), 160);
+  assert.equal(adaptiveMaxCandidates(500, 160, "JP"), 240);
+  assert.equal(adaptiveMaxCandidates(100, 160, "JP"), 100);
+  assert.equal(adaptiveMaxCandidates(0, 160, "US"), 0);
+});
+
+test("diversifyByAsn prefers distinct ASNs when filling the pool", () => {
+  const proxies = [
+    { exitIp: "1.1.1.1", network: { asn: 100 } },
+    { exitIp: "1.1.1.2", network: { asn: 100 } },
+    { exitIp: "2.2.2.2", network: { asn: 200 } },
+    { exitIp: "3.3.3.3", network: { asn: 300 } },
+    { exitIp: "4.4.4.4", network: { asn: 100 } },
+  ];
+  const selected = diversifyByAsn(proxies, 3);
+  assert.equal(selected.length, 3);
+  const asns = selected.map((proxy) => proxy.network.asn);
+  assert.deepEqual(asns, [100, 200, 300]);
+});
+
 test("network heuristics balance consumer-looking networks against latency", () => {
   assert.equal(classifyConnection({ isp: "Comcast Cable Communications" }), "consumer-likely");
+  assert.equal(classifyConnection({ isp: "Deutsche Telekom AG" }), "consumer-likely");
+  assert.equal(classifyConnection({ isp: "NTT Communications" }), "consumer-likely");
   assert.equal(classifyConnection({ org: "Amazon Data Services" }), "hosting-likely");
   assert.equal(classifyConnection({ isp: "Unfamiliar Network LLC" }), "unknown");
 
@@ -176,6 +215,80 @@ test("Cloudflare trace parser extracts observed IP and country", () => {
   });
 });
 
+test("probe failure classification and summary explain empty pools", () => {
+  assert.equal(classifyProbeError(new Error("Proxy handshake timed out")), "timeout");
+  assert.equal(classifyProbeError(new Error("Observed country was DE")), "wrong-country");
+  assert.equal(classifyProbeError(new Error("connect ECONNREFUSED")), "connect");
+  const counts = new Map();
+  tallyFailure(counts, new Error("Proxy connection timed out"));
+  tallyFailure(counts, new Error("Proxy connection timed out"));
+  tallyFailure(counts, new Error("Observed country was GB"));
+  assert.match(formatFailureSummary(counts, 40), /Of 40 sampled: 2 timed out, 1 wrong exit country/);
+});
+
+test("pool emits structured progress events during refresh", async () => {
+  const stages = [];
+  const pool = new PublicProxyPool({
+    sourceUrls: ["http://127.0.0.1:1/none"],
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  pool.on("progress", (progress) => stages.push(progress.stage));
+  await assert.rejects(() => pool.refresh(), /No supported proxies|None of|failed/i);
+  assert.ok(stages.includes("fetch"));
+  assert.ok(pool.status().lastDiscoveryError);
+});
+
+test("blockExit removes an IP from the pool and rotates when needed", () => {
+  const first = { protocol: "http", host: "8.8.8.8", port: 8080, exitIp: "1.1.1.1" };
+  const second = { protocol: "http", host: "9.9.9.9", port: 8080, exitIp: "2.2.2.2" };
+  const pool = new PublicProxyPool({
+    blockedExitIps: ["1.1.1.1"],
+    logger: { info() {}, warn() {}, error() {} },
+  });
+  pool.proxies = [first, second];
+  // Constructor blocklist does not retroactively strip an injected pool; blockExit does.
+  pool.blockExit("1.1.1.1");
+  assert.equal(pool.proxies.length, 1);
+  assert.equal(pool.current.exitIp, "2.2.2.2");
+  assert.ok(pool.status().blockedExitIps.includes("1.1.1.1"));
+  assert.equal(pool.selectExit({ protocol: "http", host: "8.8.8.8", port: 8080 }), null);
+});
+
+test("heartbeat reports success and failure against the active exit", async () => {
+  const pool = new PublicProxyPool({ autoFallback: true, logger: { info() {}, warn() {}, error() {} } });
+  assert.equal(await pool.heartbeat(), null);
+
+  const current = {
+    protocol: "http",
+    host: "127.0.0.1",
+    port: 1,
+    exitIp: "1.1.1.1",
+    failures: 0,
+    consecutiveFailures: 0,
+    successes: 0,
+  };
+  const fallback = {
+    protocol: "http",
+    host: "127.0.0.1",
+    port: 2,
+    exitIp: "2.2.2.2",
+    failures: 0,
+    consecutiveFailures: 0,
+    successes: 0,
+  };
+  pool.proxies = [current, fallback];
+  pool.currentIndex = 0;
+
+  // Port 1 is closed → heartbeat fails and counts toward the failure threshold.
+  const first = await pool.heartbeat();
+  assert.equal(first.ok, false);
+  assert.equal(pool.current.consecutiveFailures, 1);
+
+  await pool.heartbeat();
+  await pool.heartbeat();
+  assert.equal(pool.current.exitIp, "2.2.2.2");
+});
+
 test("HTTP CONNECT upstream creates a working tunnel", async () => {
   const proxyServer = net.createServer((socket) => {
     socket.once("data", (header) => {
@@ -207,14 +320,17 @@ test("startPublicMode survives a failed initial discovery and starts empty", asy
     listenPort: 0,
     controlPort: 0,
     refreshMinutes: 60,
+    heartbeatSeconds: 0,
     logger,
   });
   try {
     assert.equal(app.pool.current, null);
     assert.equal(app.pool.status().proxies.length, 0);
+    assert.ok(app.pool.status().lastDiscoveryError);
     assert.ok(warnings.some((message) => /Initial proxy discovery failed/.test(message)));
     const status = await fetch(`http://127.0.0.1:${app.controlPort}/api/status`).then((r) => r.json());
     assert.equal(status.proxies.length, 0);
+    assert.ok(status.lastDiscoveryError);
   } finally {
     await app.close();
   }
@@ -227,6 +343,7 @@ test("desktop control endpoints require the configured bearer token", async () =
     controlPort: 0,
     controlToken: "test-control-token",
     refreshMinutes: 60,
+    heartbeatSeconds: 0,
     logger: { info() {}, warn() {}, error() {} },
   });
   try {
@@ -253,6 +370,7 @@ test("the /api/select route switches to a specific exit and rejects unknown ones
     listenPort: 0,
     controlPort: 0,
     refreshMinutes: 60,
+    heartbeatSeconds: 0,
     logger: { info() {}, warn() {}, error() {} },
   });
   try {
@@ -345,6 +463,7 @@ test("closing public mode destroys active sockets and is idempotent", async () =
     listenPort: 0,
     controlPort: 0,
     refreshMinutes: 60,
+    heartbeatSeconds: 0,
     logger: { info() {}, warn() {}, error() {} },
   });
   const socket = net.connect(app.proxyPort, "127.0.0.1");

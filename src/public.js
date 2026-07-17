@@ -5,6 +5,7 @@ import { booleanEnv, integerEnv } from "./env.js";
 import { redirectHttpRequestToHttps } from "./http-upgrade.js";
 import { parseConnectAuthority } from "./net-policy.js";
 import { PublicProxyPool } from "./public/pool.js";
+import { createSocksServer } from "./public/socks-server.js";
 import { DEFAULT_SOURCE_URLS, proxyKey } from "./public/sources.js";
 import { connectViaProxy } from "./public/tunnel.js";
 import { USER_AGENT } from "./public/user-agent.js";
@@ -114,6 +115,42 @@ function createControlServer(pool, controlToken) {
       }
       return;
     }
+    if (request.method === "POST" && url.pathname === "/api/block") {
+      let body;
+      try {
+        body = await readJsonBody(request);
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: error.message }));
+        return;
+      }
+      if (typeof body.exitIp !== "string" || !body.exitIp.trim()) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "exitIp is required" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(pool.blockExit(body.exitIp)));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/unblock") {
+      let body;
+      try {
+        body = await readJsonBody(request);
+      } catch (error) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: error.message }));
+        return;
+      }
+      if (typeof body.exitIp !== "string" || !body.exitIp.trim()) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "exitIp is required" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(pool.unblockExit(body.exitIp)));
+      return;
+    }
     response.writeHead(404).end();
   });
 }
@@ -162,8 +199,17 @@ export async function startPublicMode({
   autoFallback = true,
   minThroughputMbps = 2,
   refreshMinutes = 10,
+  // How often to re-verify the active exit while the pool is idle (0 disables).
+  heartbeatSeconds = 45,
+  // Opt-in local SOCKS5 listener for non-browser apps (0 disables). Same scope
+  // as the HTTP CONNECT proxy: loopback only, CONNECT only, port 443 only.
+  socksPort = 0,
   controlToken = null,
   logger = console,
+  // Optional hook so desktop sidecar can subscribe to progress before the
+  // initial discovery pass begins (pool is constructed synchronously here).
+  blockedExitIps = [],
+  onPool = null,
 } = {}) {
   const pool = new PublicProxyPool({
     country,
@@ -175,8 +221,10 @@ export async function startPublicMode({
     rankMode,
     autoFallback,
     minThroughputMbps,
+    blockedExitIps,
     logger,
   });
+  if (typeof onPool === "function") onPool(pool);
   const openSockets = new Set();
   let closing = false;
   let closePromise = null;
@@ -279,16 +327,25 @@ export async function startPublicMode({
   const controlServer = createControlServer(pool, controlToken);
   controlServer.on("connection", trackSocket);
 
+  const socksServer = socksPort > 0
+    ? createSocksServer(pool, { connectTimeoutMs, maxAttempts, autoFallback, logger })
+    : null;
+  socksServer?.on("connection", trackSocket);
+
   // Bind first so the sidecar is the authority on port ownership. This avoids
   // reserving nothing during the potentially long initial discovery pass.
   const actualProxyPort = await listen(proxyServer, listenHost, listenPort, "browser proxy");
   let actualControlPort;
+  let actualSocksPort = null;
   try {
     actualControlPort = await listen(controlServer, listenHost, controlPort, "control");
+    if (socksServer) {
+      actualSocksPort = await listen(socksServer, listenHost, socksPort, "SOCKS");
+    }
   } catch (error) {
     closing = true;
     destroyOpenSockets();
-    await closeServer(proxyServer);
+    await Promise.all([closeServer(proxyServer), closeServer(controlServer), ...(socksServer ? [closeServer(socksServer)] : [])]);
     openSockets.clear();
     throw error;
   }
@@ -306,28 +363,47 @@ export async function startPublicMode({
   }, Math.max(1, refreshMinutes) * 60_000);
   refreshTimer.unref?.();
 
+  const heartbeatMs = Math.max(0, Number(heartbeatSeconds) || 0) * 1_000;
+  const heartbeatTimer = heartbeatMs > 0
+    ? setInterval(() => {
+      if (closing || !pool.current || pool.refreshing) return;
+      pool.heartbeat().catch((error) => {
+        logger.warn?.(`Active-exit heartbeat error: ${error.message}`);
+      });
+    }, heartbeatMs)
+    : null;
+  heartbeatTimer?.unref?.();
+
   logger.info?.(`Local browser proxy: http://${listenHost}:${actualProxyPort}`);
   logger.info?.(`Status and rotation: http://${listenHost}:${actualControlPort}`);
+  if (actualSocksPort) {
+    logger.info?.(`Local SOCKS5 proxy (HTTPS/443 only): socks5://${listenHost}:${actualSocksPort}`);
+  }
 
   return {
     pool,
     proxyServer,
     controlServer,
+    socksServer,
     proxyPort: actualProxyPort,
     controlPort: actualControlPort,
+    socksPort: actualSocksPort,
     async close() {
       if (closePromise) return await closePromise;
       closing = true;
       closePromise = (async () => {
         clearInterval(refreshTimer);
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
         const proxyClosed = closeServer(proxyServer);
         const controlClosed = closeServer(controlServer);
+        const socksClosed = socksServer ? closeServer(socksServer) : Promise.resolve();
         destroyOpenSockets();
         // Node recommends invoking this after close() to avoid accepting a
         // connection between the force-close and stop-listening operations.
         proxyServer.closeAllConnections?.();
         controlServer.closeAllConnections?.();
-        await Promise.all([proxyClosed, controlClosed]);
+        socksServer?.closeAllConnections?.();
+        await Promise.all([proxyClosed, controlClosed, socksClosed]);
         // Catch any connection callback already queued when close() began.
         destroyOpenSockets();
         openSockets.clear();
@@ -356,6 +432,8 @@ async function main() {
     autoFallback: booleanEnv("AUTO_FALLBACK", true),
     minThroughputMbps: integerEnv("MIN_THROUGHPUT_MBPS", 2, { minimum: 0 }),
     refreshMinutes: integerEnv("REFRESH_MINUTES", 10),
+    heartbeatSeconds: integerEnv("HEARTBEAT_SECONDS", 45, { minimum: 0 }),
+    socksPort: integerEnv("SOCKS_PORT", 0, { minimum: 0 }),
   };
 
   if (process.argv.includes("--check")) {
