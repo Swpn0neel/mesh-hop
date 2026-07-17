@@ -46,15 +46,18 @@ const els = {};
 for (const id of [
   "tbState", "tbStateText", "minButton", "maxButton", "closeButton",
   "idleRegion", "idleFlag", "regionField", "country", "countryButton", "countryButtonText", "countryPopover", "countryList",
-  "startButton", "options", "rankMode", "rankHelp",
+  "startButton", "options", "rankMode", "rankHelp", "rankInfoButton", "rankInfoTooltip",
   "sampleSize", "sampleValue", "poolSize", "poolSizeButton", "poolSizeButtonText", "poolSizePopover", "poolSizeList", "autoFallback",
+  "socksEnabled", "socksInfo", "socksAddress", "socksInfoButton", "socksInfoTooltip",
   "connectingRegion", "pipeline", "pipelineLive", "elapsedTime", "cancelButton",
-  "exitFlag", "exitCountry", "liveBadge", "exitIp", "exitIsp", "exitNet",
+  "exitFlag", "exitCountry", "liveBadge", "lastVerified", "exitIp", "exitIsp", "exitNet",
   "statSpeed", "statLatency", "statConsistency", "verifiedCount", "rankSummary",
   "openBrowser", "openBrowserLabel", "rotateButton", "rotateLabel", "refreshButton", "refreshLabel", "stopButton", "stopLabel",
   "errorMessage", "retryButton", "errorStopButton",
-  "drawer", "drawerHandle", "drawerBody", "tabExits", "tabActivity", "clearLogs",
-  "exitsPanel", "activityPanel", "poolList", "logs", "exitsCount", "version", "toast",
+  "drawer", "drawerHandle", "drawerBody", "tabExits", "tabBlocked", "tabActivity", "clearLogs",
+  "exitsPanel", "blockedPanel", "activityPanel", "sourceHealth", "sourceHealthSummary", "sourceHealthInfoButton", "sourceHealthTooltip", "sourceHealthDetails", "poolList", "blockedList", "logs",
+  "exitsCount", "blockedCount", "version", "toast",
+  "updateBanner", "updateBannerText", "updateDownload", "updateDismiss",
 ]) {
   els[id] = el(id);
 }
@@ -71,9 +74,46 @@ let toastTimer;
 let maxStep = -1;
 let connectionStartedAt = 0;
 let elapsedTimer;
+let lastVerifiedTimer;
 let countryPicker;
 let poolSizePicker;
-const STEPS = ["fetch", "test", "speed", "confirm"];
+let lastToastedDiscoveryError = null;
+const STEPS = ["fetch", "probe", "speed", "confirm"];
+// Engine progress stages map onto the four visible pipeline steps ("commit" is
+// the brief final-selection step and shares the "confirm" dot).
+const STAGE_TO_STEP = { fetch: 0, probe: 1, speed: 2, confirm: 3, commit: 3 };
+const PREFS_KEY = "meshhop.prefs.v1";
+const BLOCKLIST_KEY = "meshhop.blocklist.v1";
+const UPDATE_DISMISS_KEY = "meshhop.update.dismissed";
+let pendingUpdate = null;
+
+function loadBlocklist() {
+  try {
+    const raw = localStorage.getItem(BLOCKLIST_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list)
+      ? [...new Set(list.map((ip) => String(ip || "").trim().toLowerCase()).filter(Boolean))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBlocklist(ips) {
+  try {
+    localStorage.setItem(BLOCKLIST_KEY, JSON.stringify([...new Set(ips)]));
+  } catch {
+    // ignore
+  }
+}
+
+function maybeToastDiscoveryError(pool) {
+  const error = pool?.lastDiscoveryError;
+  if (!error || pool?.current) return;
+  if (error === lastToastedDiscoveryError) return;
+  lastToastedDiscoveryError = error;
+  showToast(error, "error");
+}
 
 /* ------------------------------------------------------------------ *
  * Rendering
@@ -97,6 +137,38 @@ function syncElapsedTimer(phase) {
   clearInterval(elapsedTimer);
   elapsedTimer = undefined;
   connectionStartedAt = 0;
+}
+
+// Heartbeat-driven "last verified" caption on the connected card. reportSuccess()
+// stamps proxy.lastUsed on both real browser traffic AND a passing heartbeat
+// probe, so it doubles as "the engine actually re-checked this exit at time X".
+function formatAgo(isoString) {
+  const at = isoString ? new Date(isoString).getTime() : NaN;
+  if (!Number.isFinite(at)) return null;
+  const seconds = Math.max(0, Math.floor((Date.now() - at) / 1000));
+  if (seconds < 5) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function updateLastVerified() {
+  const current = status.pool?.current;
+  const at = current?.lastUsed || current?.checkedAt;
+  const ago = at ? formatAgo(at) : null;
+  els.lastVerified.textContent = ago ? `verified ${ago}` : "not yet re-verified";
+}
+
+function syncLastVerifiedTimer(phase) {
+  if (phase === "running") {
+    updateLastVerified();
+    if (!lastVerifiedTimer) lastVerifiedTimer = setInterval(updateLastVerified, 1000);
+    return;
+  }
+  clearInterval(lastVerifiedTimer);
+  lastVerifiedTimer = undefined;
 }
 
 function setButtonBusy(button, busy) {
@@ -310,6 +382,7 @@ function render() {
   document.body.dataset.phase = phase;
   els.tbStateText.textContent = stateText[phase] ?? phase;
   syncElapsedTimer(phase);
+  syncLastVerifiedTimer(phase);
 
   // Idle region echo
   const code = els.country.value;
@@ -327,6 +400,7 @@ function render() {
   els.poolSize.disabled = locked;
   poolSizePicker.setDisabled(locked);
   els.autoFallback.disabled = locked;
+  els.socksEnabled.disabled = locked;
   for (const b of els.rankMode.querySelectorAll("button")) b.disabled = locked;
   els.startButton.disabled = actionBusy;
   els.cancelButton.disabled = actionBusy;
@@ -339,12 +413,14 @@ function render() {
   }
 
   if (current) {
-    const unhealthy = pool.autoFallback === false && (current.consecutiveFailures || 0) >= 3;
+    const failures = current.consecutiveFailures || 0;
+    const unhealthy = failures >= 2 || (pool.autoFallback === false && failures >= 1);
     els.exitFlag.textContent = countryCode(pool.country);
     els.exitCountry.textContent = countryName(pool.country);
     els.liveBadge.classList.toggle("warn", unhealthy);
     els.liveBadge.lastElementChild.textContent = unhealthy ? "Unstable" : "Live";
     els.exitIp.textContent = current.exitIp || "—";
+    els.exitIp.title = "Click to copy exit IP";
     els.exitIsp.textContent = current.network?.isp || current.network?.org || "Unknown network";
     const kind = current.network?.kind ?? "unknown";
     els.exitNet.textContent = NETWORK_LABEL[kind] ?? NETWORK_LABEL.unknown;
@@ -354,6 +430,17 @@ function render() {
     setConsistency(current.speedConsistency);
     els.verifiedCount.textContent = String(pool.proxies?.length ?? 0);
     els.rankSummary.textContent = `${RANK_LABEL[pool.rankMode] ?? "Balanced"} ranking`;
+  } else if (phase === "running" && pool?.lastDiscoveryError) {
+    // Running with an empty pool after a failed discovery — surface the reason.
+    els.verifiedCount.textContent = "0";
+    els.rankSummary.textContent = pool.lastFailureSummary || "No verified exits";
+  }
+
+  if (phase === "running" && status.socksPort) {
+    els.socksAddress.textContent = `socks5://127.0.0.1:${status.socksPort}`;
+    els.socksInfo.classList.remove("hidden");
+  } else {
+    els.socksInfo.classList.add("hidden");
   }
 
   const canAct = phase === "running" && !actionBusy;
@@ -369,7 +456,136 @@ function render() {
   setButtonBusy(els.refreshButton, busyAction === "refresh");
   setButtonBusy(els.stopButton, busyAction === "disconnect");
 
+  renderSourceHealth(pool);
   renderPool(pool);
+  renderBlocklist();
+}
+
+function sourceLabel(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host.includes("proxifly")) return "Proxifly";
+    if (host.includes("iplocate")) return "IPLocate";
+    if (host.includes("proxyscrape")) {
+      const protocol = parsed.searchParams.get("protocol");
+      return protocol ? `ProxyScrape ${protocol.toUpperCase()}` : "ProxyScrape";
+    }
+    return host;
+  } catch {
+    return "Route list";
+  }
+}
+
+function renderSourceHealth(pool) {
+  const stats = Array.isArray(pool?.sourceStats) ? pool.sourceStats : [];
+  const hasStats = stats.length > 0;
+  els.sourceHealth.classList.toggle("hidden", !hasStats);
+  if (!hasStats) {
+    els.sourceHealthTooltip.classList.add("hidden");
+    els.sourceHealthDetails.replaceChildren();
+    return;
+  }
+
+  const healthy = stats.filter((source) => source.ok).length;
+  const candidates = stats.reduce((sum, source) => sum + (source.ok ? Number(source.count) || 0 : 0), 0);
+  const verified = Array.isArray(pool?.proxies) ? pool.proxies.length : 0;
+  const allHealthy = healthy === stats.length;
+  els.sourceHealth.classList.toggle("degraded", !allHealthy);
+  if (status.phase === "starting") {
+    els.sourceHealthSummary.textContent = allHealthy
+      ? `${candidates.toLocaleString()} possible routes found · verification in progress`
+      : `${candidates.toLocaleString()} possible routes found from a limited search · verification in progress`;
+  } else if (verified > 0) {
+    els.sourceHealthSummary.textContent = allHealthy
+      ? `${verified} verified exits ready from ${candidates.toLocaleString()} possible routes`
+      : `${verified} verified exits ready · some route lists were unavailable`;
+  } else {
+    els.sourceHealthSummary.textContent = allHealthy
+      ? `${candidates.toLocaleString()} possible routes found · none passed verification`
+      : "Search was limited · no verified exits found";
+  }
+  els.sourceHealthInfoButton.setAttribute("aria-label", "View route search details");
+  els.sourceHealthDetails.replaceChildren();
+
+  for (const source of stats) {
+    const item = document.createElement("li");
+    item.className = "source-health-detail";
+
+    const label = document.createElement("span");
+    label.className = "source-health-detail-name";
+    label.textContent = sourceLabel(source.url);
+
+    const result = document.createElement("span");
+    result.className = `source-health-detail-result ${source.ok ? "healthy" : "unavailable"}`;
+    if (source.ok) {
+      const count = Number(source.count) || 0;
+      const hasUniqueCount = source.uniqueAdded != null && Number.isFinite(Number(source.uniqueAdded));
+      const added = hasUniqueCount ? Number(source.uniqueAdded) : 0;
+      result.textContent = !hasUniqueCount || added === count
+        ? `${count.toLocaleString()} routes found`
+        : `${count.toLocaleString()} found · ${added.toLocaleString()} new`;
+    } else {
+      result.textContent = source.error ? `Unavailable: ${source.error}` : "Unavailable";
+      result.title = source.error || "";
+    }
+
+    item.append(label, result);
+    els.sourceHealthDetails.append(item);
+  }
+}
+
+// Logs pool.sourceStats (per-source fetch health from sources.js) as a single
+// Activity line per refresh. The drawer also presents the same aggregate as a
+// persistent, glanceable source-health signal.
+let lastLoggedSourceStats = null;
+function logSourceHealth(pool) {
+  const stats = Array.isArray(pool?.sourceStats) ? pool.sourceStats : [];
+  if (stats.length === 0) return;
+  const key = JSON.stringify(stats);
+  if (key === lastLoggedSourceStats) return;
+  lastLoggedSourceStats = key;
+  const healthy = stats.filter((source) => source.ok).length;
+  const candidates = stats.reduce((sum, source) => sum + (source.ok ? Number(source.count) || 0 : 0), 0);
+  const allHealthy = healthy === stats.length;
+  const summary = allHealthy
+    ? `All ${stats.length} route lists reached`
+    : `${healthy}/${stats.length} route lists reached`;
+  addLog(allHealthy ? "info" : "warn", `${summary} · ${candidates.toLocaleString()} possible routes found before testing`);
+}
+
+function renderBlocklist() {
+  const blocked = loadBlocklist();
+  els.blockedCount.textContent = String(blocked.length);
+  els.blockedList.replaceChildren();
+
+  if (blocked.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "pool-empty";
+    const title = document.createElement("strong");
+    title.textContent = "No blocked exits";
+    const description = document.createElement("span");
+    description.textContent = "IPs you block are kept out of future pools until you unblock them.";
+    empty.append(title, description);
+    els.blockedList.append(empty);
+    return;
+  }
+
+  for (const ip of blocked) {
+    const row = document.createElement("div");
+    row.className = "blocked-row";
+    const label = document.createElement("span");
+    label.className = "blocked-ip";
+    label.textContent = ip;
+    const unblock = document.createElement("button");
+    unblock.type = "button";
+    unblock.className = "pool-block";
+    unblock.textContent = "Unblock";
+    unblock.title = `Allow ${ip} back into future pools`;
+    unblock.addEventListener("click", () => void unblockExitIp(ip));
+    row.append(label, unblock);
+    els.blockedList.append(row);
+  }
 }
 
 function setConsistency(value) {
@@ -397,6 +613,9 @@ function renderPool(pool) {
     if (status.phase === "starting") {
       title.textContent = "Verification in progress";
       description.textContent = "Measured exits will appear here as checks complete.";
+    } else if (pool?.lastDiscoveryError) {
+      title.textContent = "No verified exits";
+      description.textContent = pool.lastDiscoveryError;
     } else {
       title.textContent = "No verified exits yet";
       description.textContent = "Connect to build a measured fallback pool.";
@@ -406,19 +625,24 @@ function renderPool(pool) {
     return;
   }
 
-  // Rows are buttons: clicking a verified exit switches to it directly,
-  // instead of only being able to step through the pool with Rotate.
-  const canSelect = status.phase === "running" && !actionBusy;
-  for (const proxy of proxies) {
+  // Each row holds two SIBLING buttons — a large "select" button (switches to
+  // that exit) and a small block button — never one button nested inside
+  // another, which is invalid HTML and unreliable for click/focus handling.
+  const rowInteractive = status.phase === "running" && !actionBusy;
+  for (const [index, proxy] of proxies.entries()) {
     const active = current && proxy.protocol === current.protocol && proxy.host === current.host && proxy.port === current.port;
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = `pool-row${active ? " active" : ""}`;
-    row.disabled = active || !canSelect;
-    if (active) row.setAttribute("aria-current", "true");
     const label = proxy.exitIp || proxy.host;
-    row.title = active ? `${label} is the active exit` : `Switch to ${label}`;
-    row.addEventListener("click", () => selectExit(proxy));
+
+    const row = document.createElement("div");
+    row.className = `pool-row${active ? " active" : ""}${!rowInteractive && !active ? " row-disabled" : ""}`;
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "pool-row-select";
+    select.disabled = active || !rowInteractive;
+    if (active) select.setAttribute("aria-current", "true");
+    select.title = active ? `${label} is the active exit` : `Switch to ${label}`;
+    select.addEventListener("click", () => selectExit(proxy));
 
     const state = document.createElement("span");
     state.className = "pool-status";
@@ -438,11 +662,56 @@ function renderPool(pool) {
     speed.className = "pool-speed";
     const mbps = document.createElement("strong");
     mbps.textContent = proxy.throughputMbps != null ? `${proxy.throughputMbps} Mbps` : "—";
-    const lat = document.createElement("span");
-    lat.textContent = proxy.latencyMs != null ? `${proxy.latencyMs} ms` : "";
-    speed.append(mbps, lat);
+    const meta = document.createElement("span");
+    const bits = [];
+    if (proxy.latencyMs != null) bits.push(`${proxy.latencyMs} ms`);
+    if (proxy.speedConsistency != null) bits.push(`${Math.round(proxy.speedConsistency * 100)}% steady`);
+    if (proxy.protocol) bits.push(proxy.protocol.toUpperCase());
+    if (proxy.failures) bits.push(`${proxy.failures} fail${proxy.failures === 1 ? "" : "s"}`);
+    meta.textContent = bits.join(" · ");
+    speed.append(mbps, meta);
 
-    row.append(state, id, speed);
+    select.append(state, id, speed);
+
+    const block = document.createElement("button");
+    block.type = "button";
+    block.className = "pool-block-icon";
+    block.setAttribute("aria-label", `Block IP address ${label}`);
+
+    // Lucide "ban" icon (ISC license), https://lucide.dev/icons/ban
+    const blockIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    blockIcon.classList.add("pool-block-icon-svg");
+    blockIcon.setAttribute("viewBox", "0 0 24 24");
+    blockIcon.setAttribute("fill", "none");
+    blockIcon.setAttribute("stroke", "currentColor");
+    blockIcon.setAttribute("stroke-width", "2");
+    blockIcon.setAttribute("stroke-linecap", "round");
+    blockIcon.setAttribute("stroke-linejoin", "round");
+    blockIcon.setAttribute("aria-hidden", "true");
+    const blockCircle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    blockCircle.setAttribute("cx", "12");
+    blockCircle.setAttribute("cy", "12");
+    blockCircle.setAttribute("r", "10");
+    const blockSlash = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    blockSlash.setAttribute("d", "m4.9 4.9 14.2 14.2");
+    blockIcon.append(blockCircle, blockSlash);
+
+    const blockTooltip = document.createElement("span");
+    blockTooltip.className = "pool-action-tooltip";
+    blockTooltip.id = `block-tooltip-${index}`;
+    blockTooltip.setAttribute("role", "tooltip");
+    blockTooltip.textContent = "Block IP";
+    block.setAttribute("aria-describedby", blockTooltip.id);
+    block.append(blockIcon, blockTooltip);
+    // Independent of "active": you can block the exit you're currently on,
+    // just not while another action (rotate/refresh/select) is in flight.
+    block.disabled = !rowInteractive;
+    block.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void blockExitIp(proxy.exitIp || proxy.host);
+    });
+
+    row.append(select, block);
     els.poolList.append(row);
   }
 }
@@ -457,9 +726,9 @@ function resetPipeline() {
 
 function stepFromMessage(message) {
   const s = message.toLowerCase();
-  if (s.includes("confirm")) return 3;
-  if (s.includes("throughput") || s.includes("measuring")) return 2;
-  if (s.includes("testing") || s.includes("candidate") || s.includes("sampled")) return 1;
+  if (s.includes("confirm") || s.includes("selected")) return 3;
+  if (s.includes("throughput") || s.includes("measuring") || s.includes("speed-tested")) return 2;
+  if (s.includes("testing") || s.includes("candidate") || s.includes("sampled") || s.includes("verified")) return 1;
   if (s.includes("fetch") || s.includes("download") || s.includes("source") || s.includes("published")) return 0;
   return -1;
 }
@@ -469,6 +738,24 @@ function advancePipeline(message) {
   if (idx > maxStep) {
     maxStep = idx;
     paintPipeline();
+  }
+}
+
+function applyStructuredProgress(progress) {
+  if (!progress || status.phase !== "starting") return;
+  const stage = String(progress.stage || "").toLowerCase();
+  const idx = STAGE_TO_STEP[stage];
+  if (typeof idx === "number" && idx > maxStep) {
+    maxStep = idx;
+    paintPipeline();
+  }
+  // Only update the live pipeline text here. Every progress message is already
+  // mirrored to the engine's regular log stream (pool.js's #emitProgress calls
+  // logger.info for each one), which the "engine-log" listener adds to the
+  // Activity feed unconditionally — logging it again here would duplicate
+  // every stage-boundary line.
+  if (progress.message) {
+    els.pipelineLive.textContent = progress.message;
   }
 }
 
@@ -490,6 +777,67 @@ function paintPipeline() {
     const idx = STEPS.indexOf(li.dataset.step);
     li.classList.toggle("done", idx < maxStep);
     li.classList.toggle("active", idx === maxStep);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Preference persistence (last-used connect options)
+ * ------------------------------------------------------------------ */
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function savePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      country: els.country.value,
+      rankMode: selectedRank,
+      maxCandidates: Number(els.sampleSize.value),
+      poolSize: Number(els.poolSize.value),
+      autoFallback: els.autoFallback.checked,
+      socksEnabled: els.socksEnabled.checked,
+    }));
+  } catch {
+    // Private mode / storage full — non-fatal.
+  }
+}
+
+function applyPrefs(prefs) {
+  if (!prefs || typeof prefs !== "object") return;
+  if (prefs.country && COUNTRIES[prefs.country]) {
+    els.country.value = prefs.country;
+  }
+  if (prefs.rankMode && RANK_HELP[prefs.rankMode]) {
+    selectedRank = prefs.rankMode;
+    for (const button of els.rankMode.querySelectorAll("button")) {
+      const active = button.dataset.rank === selectedRank;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    }
+    els.rankHelp.textContent = RANK_HELP[selectedRank];
+  }
+  if (Number.isFinite(prefs.maxCandidates)) {
+    const clamped = Math.min(500, Math.max(40, Number(prefs.maxCandidates)));
+    els.sampleSize.value = String(clamped);
+    els.sampleValue.textContent = String(clamped);
+  }
+  if (prefs.poolSize != null) {
+    const value = String(prefs.poolSize);
+    if ([...els.poolSize.options].some((option) => option.value === value)) {
+      els.poolSize.value = value;
+    }
+  }
+  if (typeof prefs.autoFallback === "boolean") {
+    els.autoFallback.checked = prefs.autoFallback;
+  }
+  if (typeof prefs.socksEnabled === "boolean") {
+    els.socksEnabled.checked = prefs.socksEnabled;
   }
 }
 
@@ -531,6 +879,8 @@ function realBackend() {
     listen: tauriListen,
     minimize: () => appWindow.minimize(),
     toggleMaximize: () => appWindow.toggleMaximize(),
+    isMaximized: () => appWindow.isMaximized(),
+    onResized: (handler) => appWindow.onResized(handler),
     close: () => appWindow.close(),
   };
 }
@@ -564,6 +914,8 @@ function startConfig() {
     maxCandidates: Number(els.sampleSize.value),
     poolSize: Number(els.poolSize.value),
     autoFallback: els.autoFallback.checked,
+    blockedExitIps: loadBlocklist(),
+    socksEnabled: els.socksEnabled.checked,
   };
 }
 
@@ -572,11 +924,87 @@ async function connect() {
   els.logs.replaceChildren();
   resetPipeline();
   els.pipelineLive.textContent = "Starting the proxy engine…";
+  savePrefs();
   addLog("info", `Connecting to a ${els.country.value} exit in ${selectedRank} mode`);
   await withAction("connect", null, async () => {
     status = await backend.invoke("start_engine", { config: startConfig() });
     render();
   });
+}
+
+async function copyExitIp() {
+  const ip = status.pool?.current?.exitIp;
+  if (!ip) return;
+  try {
+    await navigator.clipboard.writeText(ip);
+    showToast(`Copied ${ip}`, "success");
+  } catch {
+    showToast("Could not copy exit IP", "error");
+  }
+}
+
+async function copySocksAddress() {
+  const address = els.socksAddress.textContent;
+  if (!address) return;
+  try {
+    await navigator.clipboard.writeText(address);
+    showToast(`Copied ${address}`, "success");
+  } catch {
+    showToast("Could not copy the SOCKS address", "error");
+  }
+}
+
+async function blockExitIp(exitIp) {
+  if (!exitIp) return;
+  const key = String(exitIp).trim().toLowerCase();
+  const list = loadBlocklist();
+  if (!list.includes(key)) {
+    list.push(key);
+    saveBlocklist(list);
+  }
+  await withAction("block", `Blocked ${exitIp}`, async () => {
+    if (status.phase === "running") {
+      status.pool = await backend.invoke("block_exit", { exitIp });
+    }
+    render();
+  });
+}
+
+async function unblockExitIp(exitIp) {
+  if (!exitIp) return;
+  const key = String(exitIp).trim().toLowerCase();
+  saveBlocklist(loadBlocklist().filter((ip) => ip !== key));
+  // Unblocking only lifts the exclusion for future discovery passes — it does
+  // not retroactively re-add the IP to an already-committed pool — so the
+  // engine call (when connected) is best-effort and the toast says so.
+  if (status.phase === "running") {
+    await withAction("unblock", `Unblocked ${exitIp} — takes effect on the next refresh`, async () => {
+      status.pool = await backend.invoke("unblock_exit", { exitIp });
+      render();
+    });
+    return;
+  }
+  showToast(`Unblocked ${exitIp}`, "success");
+  render();
+}
+
+function showUpdateBanner(update) {
+  pendingUpdate = update;
+  els.updateBannerText.textContent = `MeshHop ${update.latestVersion} is available (you have ${update.currentVersion}).`;
+  els.updateBanner.classList.remove("hidden");
+}
+
+async function checkForUpdate() {
+  if (!isTauri) return;
+  try {
+    const update = await backend.invoke("check_for_update");
+    if (!update?.updateAvailable) return;
+    const dismissed = localStorage.getItem(UPDATE_DISMISS_KEY);
+    if (dismissed === update.latestVersion) return;
+    showUpdateBanner(update);
+  } catch (error) {
+    addLog("warn", `Update check skipped: ${error?.message ?? error}`);
+  }
 }
 
 async function selectExit(proxy) {
@@ -597,6 +1025,95 @@ async function updateStatus() {
     render();
   } catch (error) {
     addLog("warn", `Status check failed: ${error?.message ?? error}`);
+  }
+}
+
+// A tooltip is transient by definition. It never enters a pinned state and it
+// never uses the browser's top-layer popover API. Any movement that separates
+// it from its trigger (pointer exit, scroll, resize, or window deactivation)
+// hides it immediately.
+function wireInfoTooltip(button, tooltip) {
+  if (!button || !tooltip) return;
+
+  function hide() {
+    tooltip.classList.add("hidden");
+  }
+
+  function position() {
+    const anchor = button.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const viewportPadding = 12;
+    const gap = 8;
+    const roomRight = window.innerWidth - anchor.right - viewportPadding - gap;
+    const roomLeft = anchor.left - viewportPadding - gap;
+    const placeRight = roomRight >= tooltipRect.width || roomRight >= roomLeft;
+    const idealLeft = placeRight
+      ? anchor.right + gap
+      : anchor.left - gap - tooltipRect.width;
+    const idealTop = anchor.top + (anchor.height - tooltipRect.height) / 2;
+    const left = Math.max(viewportPadding, Math.min(idealLeft, window.innerWidth - viewportPadding - tooltipRect.width));
+    const top = Math.max(viewportPadding, Math.min(idealTop, window.innerHeight - viewportPadding - tooltipRect.height));
+    tooltip.dataset.side = placeRight ? "right" : "left";
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  }
+
+  function show() {
+    if (button.getClientRects().length === 0) return;
+    tooltip.classList.remove("hidden");
+    position();
+  }
+
+  button.addEventListener("pointerenter", show);
+  button.addEventListener("pointerleave", () => {
+    if (!button.matches(":focus-visible")) hide();
+  });
+  button.addEventListener("focus", () => {
+    if (button.matches(":focus-visible")) show();
+  });
+  button.addEventListener("blur", hide);
+  button.addEventListener("click", (event) => {
+    // The button sits inside a <label>; cancelling the default also prevents
+    // an info click from toggling the associated SOCKS setting.
+    event.preventDefault();
+    event.stopPropagation();
+    if (tooltip.classList.contains("hidden")) show();
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (button.contains(event.target)) return;
+    hide();
+    if (document.activeElement === button) button.blur();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    hide();
+    if (document.activeElement === button) button.blur();
+  });
+  const scrollContainer = button.closest(".themed-scroll");
+  scrollContainer?.addEventListener("scroll", hide, { passive: true });
+  document.addEventListener("scroll", hide, true);
+  document.addEventListener("wheel", hide, { capture: true, passive: true });
+  document.addEventListener("visibilitychange", hide);
+  window.addEventListener("resize", hide);
+  window.addEventListener("blur", hide);
+
+  const visibilityObserver = new IntersectionObserver(([entry]) => {
+    if (!entry.isIntersecting) hide();
+  });
+  visibilityObserver.observe(button);
+}
+
+async function syncMaximizeButton() {
+  if (!backend.isMaximized) return;
+  try {
+    const isMaximized = await backend.isMaximized();
+    els.maxButton.classList.toggle("is-maximized", isMaximized);
+    const label = isMaximized ? "Restore" : "Maximize";
+    els.maxButton.setAttribute("aria-label", label);
+    els.maxButton.title = label;
+  } catch {
+    // Window state is cosmetic; leave the current icon intact if it cannot be read.
   }
 }
 
@@ -664,15 +1181,28 @@ function createPoolSizePicker() {
  * ------------------------------------------------------------------ */
 function wire() {
   els.minButton.addEventListener("click", () => backend.minimize?.());
-  els.maxButton.addEventListener("click", () => backend.toggleMaximize?.());
+  els.maxButton.addEventListener("click", async () => {
+    try {
+      await backend.toggleMaximize?.();
+    } catch (error) {
+      showToast(`Could not resize the window: ${error?.message ?? error}`, "error");
+    } finally {
+      await syncMaximizeButton();
+    }
+  });
   els.closeButton.addEventListener("click", () => backend.close?.());
 
   countryPicker = createCountryPicker();
   poolSizePicker = createPoolSizePicker();
-  els.country.addEventListener("change", render);
-  els.poolSize.addEventListener("change", render);
+  els.country.addEventListener("change", () => { savePrefs(); render(); });
+  els.poolSize.addEventListener("change", () => { savePrefs(); render(); });
+  els.autoFallback.addEventListener("change", savePrefs);
+  els.socksEnabled.addEventListener("change", savePrefs);
   countryPicker.wire();
   poolSizePicker.wire();
+  wireInfoTooltip(els.socksInfoButton, els.socksInfoTooltip);
+  wireInfoTooltip(els.sourceHealthInfoButton, els.sourceHealthTooltip);
+  wireInfoTooltip(els.rankInfoButton, els.rankInfoTooltip);
 
   els.rankMode.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-rank]");
@@ -684,10 +1214,29 @@ function wire() {
       b.setAttribute("aria-pressed", String(active));
     }
     els.rankHelp.textContent = RANK_HELP[selectedRank];
+    savePrefs();
   });
 
   els.sampleSize.addEventListener("input", () => {
     els.sampleValue.textContent = els.sampleSize.value;
+    savePrefs();
+  });
+
+  els.exitIp.addEventListener("click", () => void copyExitIp());
+  els.socksInfo.addEventListener("click", () => void copySocksAddress());
+  els.exitIp.style.cursor = "pointer";
+
+  els.updateDownload?.addEventListener("click", () => {
+    if (!pendingUpdate?.downloadUrl) return;
+    void backend.invoke("open_external_url", { url: pendingUpdate.downloadUrl }).catch((error) => {
+      showToast(String(error?.message ?? error), "error");
+    });
+  });
+  els.updateDismiss?.addEventListener("click", () => {
+    if (pendingUpdate?.latestVersion) {
+      try { localStorage.setItem(UPDATE_DISMISS_KEY, pendingUpdate.latestVersion); } catch { /* ignore */ }
+    }
+    els.updateBanner.classList.add("hidden");
   });
 
   els.options.addEventListener("toggle", () => {
@@ -736,41 +1285,44 @@ function wire() {
     els.drawer.classList.toggle("open", open);
     els.drawerHandle.setAttribute("aria-expanded", String(open));
     els.drawerBody.setAttribute("aria-hidden", String(!open));
+    els.clearLogs.classList.toggle("hidden", !(open && els.tabActivity.classList.contains("active")));
   };
   els.drawerHandle.addEventListener("click", () => {
     setDrawerOpen(!els.drawer.classList.contains("open"));
   });
-  const selectTab = (tab) => {
-    const exits = tab === "exits";
-    els.tabExits.classList.toggle("active", exits);
-    els.tabActivity.classList.toggle("active", !exits);
-    els.exitsPanel.classList.toggle("hidden", !exits);
-    els.activityPanel.classList.toggle("hidden", exits);
-    els.exitsPanel.hidden = !exits;
-    els.activityPanel.hidden = exits;
-    els.tabExits.setAttribute("aria-selected", String(exits));
-    els.tabActivity.setAttribute("aria-selected", String(!exits));
-    els.tabExits.tabIndex = exits ? 0 : -1;
-    els.tabActivity.tabIndex = exits ? -1 : 0;
-    els.clearLogs.classList.toggle("hidden", exits);
+  const TABS = [
+    { id: "exits", tab: els.tabExits, panel: els.exitsPanel },
+    { id: "blocked", tab: els.tabBlocked, panel: els.blockedPanel },
+    { id: "activity", tab: els.tabActivity, panel: els.activityPanel },
+  ];
+  const selectTab = (id) => {
+    for (const entry of TABS) {
+      const active = entry.id === id;
+      entry.tab.classList.toggle("active", active);
+      entry.tab.setAttribute("aria-selected", String(active));
+      entry.tab.tabIndex = active ? 0 : -1;
+      entry.panel.classList.toggle("hidden", !active);
+      entry.panel.hidden = !active;
+    }
     setDrawerOpen(true);
   };
-  const activateTab = (tab, tabButton) => {
+  const activateTab = (id, tabButton) => {
     if (els.drawer.classList.contains("open") && tabButton.classList.contains("active")) {
       setDrawerOpen(false);
       return;
     }
-    selectTab(tab);
+    selectTab(id);
   };
-  els.tabExits.addEventListener("click", () => activateTab("exits", els.tabExits));
-  els.tabActivity.addEventListener("click", () => activateTab("activity", els.tabActivity));
-  for (const tab of [els.tabExits, els.tabActivity]) {
-    tab.addEventListener("keydown", (event) => {
+  for (const entry of TABS) {
+    entry.tab.addEventListener("click", () => activateTab(entry.id, entry.tab));
+    entry.tab.addEventListener("keydown", (event) => {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       event.preventDefault();
-      const next = tab === els.tabExits ? els.tabActivity : els.tabExits;
-      selectTab(next === els.tabExits ? "exits" : "activity");
-      next.focus();
+      const index = TABS.indexOf(entry);
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next = TABS[(index + direction + TABS.length) % TABS.length];
+      selectTab(next.id);
+      next.tab.focus();
     });
   }
   els.clearLogs.addEventListener("click", () => {
@@ -792,31 +1344,58 @@ function wire() {
  * ------------------------------------------------------------------ */
 async function init() {
   els.version.textContent = `v${__APP_VERSION__}`;
+  applyPrefs(loadPrefs());
   els.rankHelp.textContent = RANK_HELP[selectedRank];
   wire();
+  countryPicker?.sync();
+  poolSizePicker?.sync();
   render();
+
+  await syncMaximizeButton();
+  await backend.onResized?.(() => void syncMaximizeButton());
 
   await backend.listen("engine-log", ({ payload }) => {
     const level = payload.level || "info";
     const message = payload.message || "";
+    // Structured progress owns the pipeline live text when available; logs still
+    // fill the activity feed and act as a fallback for older engine builds.
     addLog(level, message);
     if (status.phase === "starting" && level !== "error") {
-      els.pipelineLive.textContent = friendlyProgressMessage(message);
-      advancePipeline(message);
+      if (!els.pipelineLive.dataset.structured) {
+        els.pipelineLive.textContent = friendlyProgressMessage(message);
+        advancePipeline(message);
+      }
     }
   });
+  await backend.listen("engine-progress", ({ payload }) => {
+    els.pipelineLive.dataset.structured = "1";
+    applyStructuredProgress(payload);
+  });
   await backend.listen("engine-state", ({ payload }) => {
-    if (payload.phase === "starting" && status.phase !== "starting") resetPipeline();
+    if (payload.phase === "starting" && status.phase !== "starting") {
+      resetPipeline();
+      delete els.pipelineLive.dataset.structured;
+      lastToastedDiscoveryError = null;
+      lastLoggedSourceStats = null;
+    }
+    if (payload.phase !== "starting") delete els.pipelineLive.dataset.structured;
     status = payload.pool || !status.pool ? payload : { ...payload, pool: status.pool };
+    if (status.phase === "running") maybeToastDiscoveryError(status.pool);
+    logSourceHealth(status.pool);
     render();
   });
   await backend.listen("pool-updated", ({ payload }) => {
     status.pool = payload;
+    if (status.phase === "running" || status.phase === "starting") {
+      maybeToastDiscoveryError(payload);
+    }
+    logSourceHealth(payload);
     render();
   });
 
   await updateStatus();
   setInterval(updateStatus, 5000);
+  void checkForUpdate();
 }
 
 /* ------------------------------------------------------------------ *
@@ -825,7 +1404,7 @@ async function init() {
 function mockBackend() {
   const listeners = new Map();
   const emit = (event, payload) => (listeners.get(event) || []).forEach((cb) => cb({ payload }));
-  const state = { phase: "stopped", message: "Ready to connect", proxyPort: 17877, controlPort: 17878, pool: null };
+  const state = { phase: "stopped", message: "Ready to connect", proxyPort: 17877, controlPort: 17878, socksPort: null, pool: null };
   const ISPS = ["Comcast Cable", "Verizon Fios", "Charter Spectrum", "AT&T Internet", "Cox Communications", "Amazon AWS", "DigitalOcean", "Hetzner"];
 
   const makePool = (country) => {
@@ -840,6 +1419,8 @@ function mockBackend() {
         throughputMbps: Math.round((72 - i * 7.5) * 10) / 10,
         speedConsistency: Math.round((0.95 - i * 0.06) * 100) / 100,
         consecutiveFailures: 0,
+        checkedAt: new Date().toISOString(),
+        lastUsed: i === 0 ? new Date().toISOString() : null,
         network: {
           isp: ISPS[i],
           org: ISPS[i],
@@ -847,24 +1428,52 @@ function mockBackend() {
         },
       };
     });
-    return { country, rankMode: selectedRank, sourceCount: 128, lastRefresh: new Date().toISOString(), refreshing: false, autoFallback: true, current: proxies[0], proxies };
+    // Randomized per call so the preview doesn't show identical numbers on every mock refresh
+    // (the real engine's sourceStats come from live network results in src/public/sources.js).
+    const jitter = (base, spread) => Math.round(base + (Math.random() - 0.5) * spread);
+    const sourceStats = [
+      { url: "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/…", ok: true, count: jitter(412, 80) },
+      { url: "https://raw.githubusercontent.com/iplocate/free-proxy-list/…", ok: true, count: jitter(203, 60) },
+      { url: "https://api.proxyscrape.com/v2/?protocol=http…", ok: true, count: jitter(318, 70) },
+      Math.random() < 0.7
+        ? { url: "https://api.proxyscrape.com/v2/?protocol=socks4…", ok: false, count: 0, error: "504 Gateway Timeout" }
+        : { url: "https://api.proxyscrape.com/v2/?protocol=socks4…", ok: true, count: jitter(90, 40) },
+      { url: "https://api.proxyscrape.com/v2/?protocol=socks5…", ok: true, count: jitter(176, 50) },
+    ];
+    return {
+      country,
+      rankMode: selectedRank,
+      sourceCount: sourceStats.reduce((sum, s) => sum + s.count, 0),
+      sourceStats,
+      lastRefresh: new Date().toISOString(),
+      refreshing: false,
+      autoFallback: true,
+      blockedExitIps: loadBlocklist(),
+      current: proxies[0],
+      proxies,
+    };
   };
 
   const script = (country) => {
-    const lines = [
-      [400, "info", `Testing 40 of 128 published ${country} candidates…`],
-      [500, "info", "  1. http://45.120.8.10:8080 -> 23.55.0.51 (180 ms)"],
-      [500, "info", "  2. socks5://46.121.9.47:1080 -> 24.58.29.101 (210 ms)"],
-      [700, "info", "Measuring sustained throughput on the 24 strongest candidates (steady-state window)…"],
-      [600, "info", "  speed 1. http://45.120.8.10:8080 -> 62.4 Mbps"],
-      [500, "info", "  speed 2. https://48.123.11.7:443 -> 54.1 Mbps"],
-      [700, "info", "Confirming the 12 best candidates across independent HTTPS hosts…"],
-      [800, "info", `Selected http://45.120.8.10:8080 (23.55.0.51, 140 ms, 58.2 Mbps); 8 verified exits retained`],
+    const progress = [
+      [300, { stage: "fetch", done: 0, total: 2, message: `Downloading published ${country} proxy lists…` }],
+      [400, { stage: "fetch", done: 2, total: 2, message: `Fetched 128 published ${country} candidates; sampling 40…` }],
+      [500, { stage: "probe", done: 0, total: 40, message: `Testing 40 of 128 published ${country} candidates…` }],
+      [500, { stage: "probe", done: 5, total: 40, message: "Verified 5 working exits of 40 tested…" }],
+      [600, { stage: "speed", done: 0, total: 24, message: "Measuring sustained throughput on the 24 strongest candidates…" }],
+      [500, { stage: "speed", done: 8, total: 24, message: "Speed-tested 8/24 exits…" }],
+      [600, { stage: "confirm", done: 0, total: 12, message: "Confirming the 12 best candidates across independent HTTPS hosts…" }],
+      [500, { stage: "confirm", done: 8, total: 12, message: "Confirmed 8/12 exits…" }],
+      [400, { stage: "commit", done: 1, total: 1, message: "Selected http://45.120.8.10:8080 (23.55.0.51, 140 ms, 58.2 Mbps); 8 verified exits retained" }],
     ];
-    let delay = 300;
-    for (const [gap, level, message] of lines) {
+    let delay = 200;
+    for (const [gap, payload] of progress) {
       delay += gap;
-      setTimeout(() => { if (state.phase === "starting") emit("engine-log", { level, message }); }, delay);
+      setTimeout(() => {
+        if (state.phase !== "starting") return;
+        emit("engine-progress", payload);
+        emit("engine-log", { level: "info", message: payload.message });
+      }, delay);
     }
     setTimeout(() => {
       if (state.phase !== "starting") return;
@@ -873,13 +1482,15 @@ function mockBackend() {
       state.message = `${country} exit is active`;
       emit("pool-updated", state.pool);
       emit("engine-state", { ...state });
-    }, delay + 700);
+    }, delay + 500);
   };
 
-  const snapshot = () => ({ phase: state.phase, message: state.message, proxyPort: state.proxyPort, controlPort: state.controlPort, pool: state.pool });
+  const snapshot = () => ({ phase: state.phase, message: state.message, proxyPort: state.proxyPort, controlPort: state.controlPort, socksPort: state.socksPort, pool: state.pool });
 
   return {
     minimize() {}, toggleMaximize() {}, close() {},
+    isMaximized: () => Promise.resolve(false),
+    onResized: () => Promise.resolve(() => {}),
     listen(event, cb) {
       listeners.set(event, [...(listeners.get(event) || []), cb]);
       return Promise.resolve(() => {});
@@ -890,10 +1501,41 @@ function mockBackend() {
         state.phase = "starting";
         state.message = `Testing published ${country} exits…`;
         state.pool = null;
+        state.socksPort = args.config.socksEnabled ? 17879 : null;
         emit("engine-state", { ...state });
         script(country);
         return Promise.resolve(snapshot());
       }
+      if (cmd === "block_exit") {
+        const ip = String(args.exitIp || "").toLowerCase();
+        if (state.pool) {
+          state.pool.proxies = state.pool.proxies.filter((proxy) => proxy.exitIp !== ip);
+          if (state.pool.current?.exitIp === ip) {
+            state.pool.current = state.pool.proxies[0] || null;
+          }
+          state.pool.blockedExitIps = [...new Set([...(state.pool.blockedExitIps || []), ip])];
+          emit("pool-updated", state.pool);
+        }
+        return Promise.resolve(state.pool);
+      }
+      if (cmd === "unblock_exit") {
+        const ip = String(args.exitIp || "").toLowerCase();
+        if (state.pool) {
+          state.pool.blockedExitIps = (state.pool.blockedExitIps || []).filter((blocked) => blocked !== ip);
+          emit("pool-updated", state.pool);
+        }
+        return Promise.resolve(state.pool);
+      }
+      if (cmd === "check_for_update") {
+        return Promise.resolve({
+          currentVersion: __APP_VERSION__,
+          latestVersion: __APP_VERSION__,
+          updateAvailable: false,
+          downloadUrl: "https://github.com/Swpn0neel/mesh-hop/releases/latest",
+          releaseUrl: "https://github.com/Swpn0neel/mesh-hop/releases/latest",
+        });
+      }
+      if (cmd === "open_external_url") return Promise.resolve();
       if (cmd === "stop_engine") {
         state.phase = "stopped";
         state.message = "Disconnected";

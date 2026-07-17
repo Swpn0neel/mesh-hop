@@ -24,8 +24,9 @@
           <button id="minButton" class="tb-btn" type="button" aria-label="Minimize">
             <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.5h7" /></svg>
           </button>
-          <button id="maxButton" class="tb-btn" type="button" aria-label="Maximize">
-            <svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2.75" y="2.75" width="6.5" height="6.5" rx=".5" /></svg>
+          <button id="maxButton" class="tb-btn" type="button" aria-label="Maximize" title="Maximize">
+            <svg class="window-icon-maximize" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.75" y="2.75" width="6.5" height="6.5" rx=".5" /></svg>
+            <svg class="window-icon-restore" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 2.75h5.25V8M2.75 4H8v5.25H2.75z" /></svg>
           </button>
           <button id="closeButton" class="tb-btn tb-close" type="button" aria-label="Close">
             <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6m0-6-6 6" /></svg>
@@ -40,6 +41,12 @@
           <svg class="ambient-arc" viewBox="0 0 600 600" preserveAspectRatio="xMidYMid slice">
             <path d="M-40 470C160 210 330 150 660 330" />
           </svg>
+        </div>
+
+        <div class="update-banner hidden" id="updateBanner" role="status">
+          <span id="updateBannerText">A newer MeshHop is available.</span>
+          <button type="button" class="update-banner-action" id="updateDownload">Download</button>
+          <button type="button" class="update-banner-dismiss" id="updateDismiss" aria-label="Dismiss update notice">×</button>
         </div>
 
         <div class="hero themed-scroll">
@@ -111,7 +118,17 @@
               </summary>
               <div class="options-body">
                 <div class="opt-row">
-                  <span class="opt-label">Ranking priority</span>
+                  <div class="opt-label-row opt-label-row-spread">
+                    <span class="opt-label">Ranking priority</span>
+                    <button type="button" class="info-btn" id="rankInfoButton" aria-label="Explain the ranking priority modes" aria-describedby="rankInfoTooltip">
+                      <!-- Lucide "info" icon (ISC license), https://lucide.dev/icons/info -->
+                      <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M12 16v-4" />
+                        <path d="M12 8h.01" />
+                      </svg>
+                    </button>
+                  </div>
                   <div class="segmented" id="rankMode" role="group" aria-label="Ranking priority">
                     <button type="button" data-rank="speed" aria-pressed="false">Speed</button>
                     <button type="button" data-rank="balanced" class="active" aria-pressed="true">Balanced</button>
@@ -125,7 +142,15 @@
                     <label class="opt-label" for="sampleSize">Search depth</label>
                     <output id="sampleValue">160</output>
                   </div>
-                  <input id="sampleSize" type="range" min="40" max="500" step="20" value="160" />
+                  <div class="range-control">
+                    <input id="sampleSize" type="range" min="40" max="500" step="20" value="160" />
+                    <span class="range-ticks" aria-hidden="true">
+                      <span style="--tick-position: 13.043%"></span>
+                      <span style="--tick-position: 34.783%"></span>
+                      <span style="--tick-position: 56.522%"></span>
+                      <span style="--tick-position: 78.261%"></span>
+                    </span>
+                  </div>
                   <div class="range-ends"><span>Quick</span><span>Thorough</span></div>
                 </div>
 
@@ -161,6 +186,25 @@
                     </span>
                   </label>
                 </div>
+
+                <label class="opt-row toggle-field" for="socksEnabled">
+                  <span class="opt-label-row">
+                    <span class="opt-label">Let other apps use this too</span>
+                    <button type="button" class="info-btn" id="socksInfoButton" aria-label="More info about letting other apps use this connection" aria-describedby="socksInfoTooltip">
+                      <!-- Lucide "info" icon (ISC license), https://lucide.dev/icons/info -->
+                      <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="10" />
+                        <path d="M12 16v-4" />
+                        <path d="M12 8h.01" />
+                      </svg>
+                    </button>
+                  </span>
+                  <span class="toggle">
+                    <input id="socksEnabled" type="checkbox" />
+                    <span class="toggle-track" aria-hidden="true"><span class="toggle-thumb"></span></span>
+                    <span class="toggle-text">Share this connection with other apps on your computer</span>
+                  </span>
+                </label>
               </div>
             </details>
           </section>
@@ -187,7 +231,7 @@
 
             <ol class="pipeline" id="pipeline">
               <li class="step" data-step="fetch"><span class="step-mark"></span><span class="step-name">Fetching sources</span></li>
-              <li class="step" data-step="test"><span class="step-mark"></span><span class="step-name">Testing candidates</span></li>
+              <li class="step" data-step="probe"><span class="step-mark"></span><span class="step-name">Testing candidates</span></li>
               <li class="step" data-step="speed"><span class="step-mark"></span><span class="step-name">Measuring speed</span></li>
               <li class="step" data-step="confirm"><span class="step-mark"></span><span class="step-name">Confirming exits</span></li>
             </ol>
@@ -205,7 +249,10 @@
                   <span class="exit-eyebrow">Verified exit</span>
                   <span class="exit-country" id="exitCountry">United States</span>
                 </div>
-                <span class="live-badge" id="liveBadge"><span class="live-dot"></span><span>Live</span></span>
+                <div class="exit-live-wrap">
+                  <span class="live-badge" id="liveBadge"><span class="live-dot"></span><span>Live</span></span>
+                  <span class="live-checked" id="lastVerified" title="Re-checked automatically in the background">verified just now</span>
+                </div>
               </div>
 
               <div class="exit-ip" id="exitIp">—</div>
@@ -255,6 +302,10 @@
                 <span id="stopLabel">Disconnect</span>
               </button>
             </div>
+
+            <button type="button" class="socks-info hidden" id="socksInfo" title="Click to copy">
+              <span>Other apps can use </span><strong id="socksAddress">socks5://127.0.0.1:17879</strong><span> (HTTPS/443 only)</span>
+            </button>
           </section>
 
           <!-- ERROR -->
@@ -279,20 +330,41 @@
             <button class="drawer-tab active" id="tabExits" data-tab="exits" role="tab" type="button" aria-selected="true" aria-controls="exitsPanel">
               Verified exits<span class="dh-count" id="exitsCount">0</span>
             </button>
+            <button class="drawer-tab" id="tabBlocked" data-tab="blocked" role="tab" type="button" aria-selected="false" aria-controls="blockedPanel" tabindex="-1">
+              Blocked<span class="dh-count" id="blockedCount">0</span>
+            </button>
             <button class="drawer-tab" id="tabActivity" data-tab="activity" role="tab" type="button" aria-selected="false" aria-controls="activityPanel" tabindex="-1">
               Activity
             </button>
-            <button class="dtab-action hidden" id="clearLogs" type="button">Clear</button>
-            <button class="drawer-toggle" id="drawerHandle" type="button" aria-expanded="false" aria-controls="drawerBody" aria-label="Toggle details panel">
-              <svg class="dh-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4" /></svg>
-            </button>
+            <div class="drawer-bar-trailing">
+              <button class="dtab-action hidden" id="clearLogs" type="button">Clear</button>
+              <button class="drawer-toggle" id="drawerHandle" type="button" aria-expanded="false" aria-controls="drawerBody" aria-label="Toggle details panel">
+                <svg class="dh-caret" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 10 4-4 4 4" /></svg>
+              </button>
+            </div>
           </div>
 
           <div class="drawer-body" id="drawerBody" aria-hidden="true">
             <div class="drawer-content">
               <div class="tabpanel themed-scroll" id="exitsPanel" role="tabpanel" aria-labelledby="tabExits">
+                <div class="source-health hidden" id="sourceHealth">
+                  <span class="source-health-summary" id="sourceHealthSummary" aria-live="polite">Route search details will appear after discovery.</span>
+                  <button type="button" class="info-btn source-health-info" id="sourceHealthInfoButton" aria-label="View route search details" aria-describedby="sourceHealthTooltip">
+                    <svg class="info-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" />
+                      <path d="M12 16v-4" />
+                      <path d="M12 8h.01" />
+                    </svg>
+                  </button>
+                </div>
                 <div class="pool-list" id="poolList">
                   <div class="pool-empty"><strong>No verified exits yet</strong><span>Connect to build a measured fallback pool.</span></div>
+                </div>
+              </div>
+
+              <div class="tabpanel themed-scroll hidden" id="blockedPanel" role="tabpanel" aria-labelledby="tabBlocked" hidden>
+                <div class="blocked-list" id="blockedList">
+                  <div class="pool-empty"><strong>No blocked exits</strong><span>IPs you block are kept out of future pools until you unblock them.</span></div>
                 </div>
               </div>
 
@@ -312,6 +384,22 @@
 
     <div class="select-popover themed-scroll" id="poolSizePopover" popover="auto">
       <div class="select-list" id="poolSizeList" role="listbox" aria-label="Fallback pool size"></div>
+    </div>
+
+    <div class="info-tooltip hidden" id="socksInfoTooltip" role="tooltip">
+      <p>Adds a local SOCKS5 proxy for other apps. It uses the same verified exit as MeshHop's browser.</p>
+      <p>Local only and HTTPS port 443 only. Enable it, connect, then copy the address from the connected screen.</p>
+    </div>
+
+    <div class="info-tooltip hidden" id="rankInfoTooltip" role="tooltip">
+      <p><strong>Speed</strong> prioritizes measured throughput and latency.</p>
+      <p><strong>Balanced</strong> weighs speed, stability, and ISP likelihood.</p>
+      <p><strong>ISP-first</strong> favors consumer-looking networks, even when they are slower.</p>
+    </div>
+
+    <div class="info-tooltip source-health-tooltip hidden" id="sourceHealthTooltip" role="tooltip">
+      <p class="source-health-tooltip-title">Route search details</p>
+      <ul class="source-health-details" id="sourceHealthDetails"></ul>
     </div>
 
     <div class="toast" id="toast" role="status"></div>
