@@ -36,7 +36,7 @@ npm run public
 
 MeshHop then:
 
-1. Downloads current published proxy candidates for the chosen country from [Proxifly](https://github.com/proxifly/free-proxy-list) and [IPLocate](https://github.com/iplocate/free-proxy-list) (HTTP, HTTPS, SOCKS4, SOCKS5).
+1. Downloads current published proxy candidates for the chosen country from [Proxifly](https://github.com/proxifly/free-proxy-list), [IPLocate](https://github.com/iplocate/free-proxy-list), and [ProxyScrape](https://proxyscrape.com/free-proxy-list) (HTTP, HTTPS, SOCKS4, SOCKS5).
 2. Tests a randomized sample concurrently instead of trusting the lists.
 3. Verifies the observed exit country and IP through an end-to-end HTTPS request to Cloudflare's trace endpoint.
 4. Measures download speed over a steady-state window — skipping the initial warm-up so connect/handshake overhead and TCP slow-start don't skew the result — takes a second confirming sample per exit and scores its speed consistency, then looks up ASN/ISP (via `ipwho.is`), classifies consumer vs. hosting networks, and confirms finalists across independent HTTPS hosts.
@@ -69,7 +69,10 @@ npm run public:check
 | `MAX_ATTEMPTS` | `3` | Tunnel attempts before failing a request. |
 | `AUTO_FALLBACK` | `1` | Set to `0` to keep a single exit and never auto-rotate on failure. |
 | `REFRESH_MINUTES` | `10` | Background refresh interval. |
-| `SOURCE_URLS` | Proxifly + IPLocate | Comma-separated list templates; `{COUNTRY}` is substituted. |
+| `HEARTBEAT_SECONDS` | `45` | How often to re-verify the active exit while idle. `0` disables. |
+| `SOCKS_PORT` | `0` | Optional local SOCKS5 listener for non-browser apps (same scope as the CONNECT proxy: loopback, CONNECT only, port 443 only). `0` disables it. |
+| `BLOCKED_EXIT_IPS` | *(empty)* | Comma-separated exit IPs to exclude from the pool. |
+| `SOURCE_URLS` | Proxifly + IPLocate + ProxyScrape (HTTP/SOCKS4/SOCKS5) | Comma-separated list templates; `{COUNTRY}` is substituted. |
 
 ```powershell
 $env:RANK_MODE = "speed"; npm run public      # lowest measured latency/throughput cost
@@ -80,6 +83,7 @@ $env:COUNTRY = "GB"; npm run public           # search another region
 
 - A loopback-only HTTPS `CONNECT` proxy for a separate browser profile.
 - HTTPS over TCP on port **443 only**. Plain-HTTP navigations are upgraded to HTTPS locally with a `308` redirect.
+- An optional, off-by-default loopback **SOCKS5** listener with the identical scope, for non-browser apps that speak SOCKS5 (enable in the desktop app's Advanced options, or `SOCKS_PORT` in CLI mode).
 - No UDP, QUIC, raw IP tunnelling, or LAN access.
 
 ## Browser setup
@@ -116,3 +120,8 @@ npm run test:public
 ## Security
 
 Read [SECURITY.md](SECURITY.md) before relying on MeshHop. In short: keep normal HTTPS certificate validation enabled, never accept a certificate warning from a public proxy, and treat public exits as untrusted intermediaries that can observe destination domains, timing, and volume.
+
+## Roadmap & change log
+
+- [IMPROVEMENT-PLAN.md](IMPROVEMENT-PLAN.md) — phased product/engineering plan (Windows-first).
+- [IMPROVEMENTS.md](IMPROVEMENTS.md) — what has been shipped from that plan (Phase A–E status).

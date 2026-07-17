@@ -26,8 +26,11 @@ Not an on/off toggle. A **route that is discovered, measured, and earned.** Surf
 - **Motion:** conveys state (connecting pipeline, live pulse), 150–250ms, reduced-motion fallback. No decoration-only motion.
 
 ## Hard constraints
-- Tauri commands (unchanged): `start_engine({country, rankMode, maxCandidates, poolSize, autoFallback})`, `stop_engine`, `engine_status`, `rotate_exit`, `refresh_exits`, `open_browser`.
-- Events (unchanged): `engine-log {level,message}`, `engine-state {phase,message,proxyPort,controlPort,pool}`, `pool-updated {pool}`. Phases: `stopped | starting | running | error`.
+- Tauri commands: `start_engine({country, rankMode, maxCandidates, poolSize, autoFallback, blockedExitIps, socksEnabled})`, `stop_engine`, `engine_status`, `rotate_exit`, `select_exit({protocol, host, port})`, `block_exit({exitIp})`, `unblock_exit({exitIp})`, `refresh_exits`, `open_browser`, `check_for_update`, `open_external_url({url})`.
+- Events: `engine-log {level,message}`, `engine-state {phase,message,proxyPort,controlPort,pool}`, `pool-updated {pool}`, `engine-progress {stage,done,total,message}`. Phases: `stopped | starting | running | error`. Progress stages: `fetch | probe | speed | confirm | commit`.
 - Custom titlebar (window has no OS decorations): must provide minimize/maximize/close + drag region.
-- Strict CSP: no external fonts, CDNs, or network assets. System fonts, inline SVG, `data:` URIs only.
+- Strict CSP: no external fonts, CDNs, or network assets. System fonts, inline SVG, `data:` URIs only. Update checks and downloads are performed by the Rust host, not the WebView.
 - Vanilla JS + Vite build to `desktop-dist/`. No framework.
+- Persist last-used connect options (country, ranking, sample size, pool size, failover) and a local exit-IP blocklist so reconnect is one click and known-bad exits stay out.
+- Closing the window hides to the **system tray** (route keeps running). Tray **Quit** fully exits. OS notifications for auto-rotate, empty pool, and engine failure.
+- Roadmap: [IMPROVEMENT-PLAN.md](./IMPROVEMENT-PLAN.md). Shipped changes: [IMPROVEMENTS.md](./IMPROVEMENTS.md).

@@ -8,7 +8,7 @@ src-tauri/target/
 src-tauri/binaries/*.exe
 src-tauri/binaries/meshhop-engine-*
 .serena/
-DESKTOP.md
+.claude/
 
 # Release installers — publish via GitHub Releases instead
 release/
