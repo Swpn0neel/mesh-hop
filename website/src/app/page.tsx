@@ -11,6 +11,8 @@ import { SiteHeader } from "@/components/site-header";
 import { LATEST_RELEASE_URL, RELEASE_VERSION, WINDOWS_INSTALLER_URL } from "@/lib/release";
 import { motion, useReducedMotion } from "motion/react";
 
+const HERO_EASE = [0.22, 1, 0.36, 1] as const;
+
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 18 18" aria-hidden="true">
@@ -50,43 +52,44 @@ export default function Home() {
           <div className="hero-copy shell">
             <motion.div
               className="availability"
-              initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 8 }}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1, duration: 0.5, ease: "easeOut" }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.08, duration: 0.45, ease: HERO_EASE }}
             >
               <span />Windows desktop app · no account required
             </motion.div>
             <h1 id="hero-title">
               <BlurText
                 text="A working exit, earned."
-                delay={85}
+                delay={65}
                 stepDuration={0.3}
                 direction="bottom"
+                animateOnView={false}
                 className="justify-center"
               />
             </h1>
             <motion.p
               className="hero-kicker"
-              initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.45, duration: 0.5, ease: "easeOut" }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.2, duration: 0.5, ease: HERO_EASE }}
             >
               Discover · Measure · Verify · Route
             </motion.p>
             <motion.p
               className="hero-description"
-              initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
+              initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.6, duration: 0.6, ease: "easeOut" }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.28, duration: 0.55, ease: HERO_EASE }}
             >
               MeshHop tests public proxy exits until one earns the route—then opens a dedicated
               browser routed through the best verified option.
             </motion.p>
             <motion.div
               className="hero-actions"
-              initial={reduceMotion ? { opacity: 1, y: 0 } : { opacity: 0, y: 15 }}
+              initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.75, duration: 0.6, ease: "easeOut" }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.38, duration: 0.55, ease: HERO_EASE }}
             >
               <a className="button-primary" href={WINDOWS_INSTALLER_URL} download>
                 <DownloadIcon />
@@ -100,15 +103,15 @@ export default function Home() {
             <motion.div
               className="hero-meta"
               aria-label="Download details"
-              initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
+              initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              transition={{ delay: 0.9, duration: 0.5 }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.5, duration: 0.4, ease: HERO_EASE }}
             >
-              <span>Windows 10 / 11</span>
+              <span><span className="meta-full">Windows 10 / 11</span><span className="meta-compact">Win 10/11</span></span>
               <i />
-              <span>64-bit installer</span>
+              <span><span className="meta-full">64-bit installer</span><span className="meta-compact">x64</span></span>
               <i />
-              <span>Version {RELEASE_VERSION}</span>
+              <span><span className="meta-full">Version {RELEASE_VERSION}</span><span className="meta-compact">v{RELEASE_VERSION}</span></span>
             </motion.div>
           </div>
 
@@ -150,16 +153,29 @@ export default function Home() {
 
         <section className="honesty-section" id="safety">
           <div className="section-shell honesty-layout">
-            <div className="honesty-lead">
+            <AnimatedContent
+              distance={28}
+              direction="horizontal"
+              reverse
+              duration={0.65}
+              threshold={0.2}
+              className="honesty-lead"
+            >
               <span className="section-index">03 / Good to know</span>
               <h2>Useful, not magic.</h2>
               <p>
                 MeshHop removes the busywork from finding a public exit. It does not turn that exit
                 into a private network.
               </p>
-            </div>
+            </AnimatedContent>
 
-            <div className="honesty-list">
+            <AnimatedContent
+              distance={30}
+              duration={0.7}
+              threshold={0.2}
+              delay={0.06}
+              className="honesty-list"
+            >
               <article>
                 <span>01</span>
                 <div>
@@ -181,25 +197,32 @@ export default function Home() {
                   <p>Use it for low-risk browsing and regional access where a working, measured exit matters more than a raw proxy list.</p>
                 </div>
               </article>
-            </div>
+            </AnimatedContent>
           </div>
         </section>
 
-        <section className="download-section section-shell" id="download">
-          <Image className="download-mark" src="/meshhop-logo.png" width={112} height={112} alt="MeshHop" />
-          <span className="download-ready"><i />Ready for Windows</span>
-          <h2>Let the route prove itself.</h2>
-          <p>Choose a region. Give MeshHop a minute to test the field. Open the browser only when the exit is earned.</p>
-          <div className="download-actions">
-            <a className="button-primary large download-button" href={WINDOWS_INSTALLER_URL} download>
-              <DownloadIcon />
-              <span>Download MeshHop {RELEASE_VERSION}</span>
-            </a>
-          </div>
-          <div className="download-detail">
-            <span>Windows 10 / 11 · x64 installer</span>
-            <a href={LATEST_RELEASE_URL} target="_blank" rel="noreferrer">Release notes + checksums ↗</a>
-          </div>
+        <section id="download">
+          <AnimatedContent
+            distance={36}
+            duration={0.72}
+            threshold={0.2}
+            className="download-section section-shell"
+          >
+            <Image className="download-mark" src="/meshhop-logo.png" width={112} height={112} alt="MeshHop" />
+            <span className="download-ready"><i />Ready for Windows</span>
+            <h2>Let the route prove itself.</h2>
+            <p>Choose a region. Give MeshHop a minute to test the field. Open the browser only when the exit is earned.</p>
+            <div className="download-actions">
+              <a className="button-primary large download-button" href={WINDOWS_INSTALLER_URL} download>
+                <DownloadIcon />
+                <span>Download MeshHop {RELEASE_VERSION}</span>
+              </a>
+            </div>
+            <div className="download-detail">
+              <span>Windows 10/11 · 64-bit</span>
+              <a href={LATEST_RELEASE_URL} target="_blank" rel="noreferrer">Release details ↗</a>
+            </div>
+          </AnimatedContent>
         </section>
       </main>
 

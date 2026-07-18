@@ -11,6 +11,7 @@ type BlurTextProps = {
   direction?: 'top' | 'bottom';
   threshold?: number;
   rootMargin?: string;
+  animateOnView?: boolean;
   animationFrom?: Record<string, string | number>;
   animationTo?: Array<Record<string, string | number>>;
   easing?: Easing | Easing[];
@@ -39,6 +40,7 @@ const BlurText: React.FC<BlurTextProps> = ({
   direction = 'top',
   threshold = 0.1,
   rootMargin = '0px',
+  animateOnView = true,
   animationFrom,
   animationTo,
   easing = (t: number) => t,
@@ -46,12 +48,12 @@ const BlurText: React.FC<BlurTextProps> = ({
   stepDuration = 0.35
 }) => {
   const elements = animateBy === 'words' ? text.split(' ') : text.split('');
-  const [inView, setInView] = useState(false);
+  const [inView, setInView] = useState(() => !animateOnView);
   const ref = useRef<HTMLSpanElement>(null);
   const reduceMotion = useReducedMotion();
 
   useEffect(() => {
-    if (reduceMotion) {
+    if (reduceMotion || !animateOnView) {
       return;
     }
 
@@ -72,7 +74,7 @@ const BlurText: React.FC<BlurTextProps> = ({
     );
     observer.observe(ref.current);
     return () => observer.disconnect();
-  }, [threshold, rootMargin, reduceMotion]);
+  }, [threshold, rootMargin, reduceMotion, animateOnView]);
 
   const defaultFrom = useMemo(
     () =>
@@ -94,6 +96,7 @@ const BlurText: React.FC<BlurTextProps> = ({
 
   const fromSnapshot = animationFrom ?? defaultFrom;
   const toSnapshots = animationTo ?? defaultTo;
+  const finalSnapshot = toSnapshots[toSnapshots.length - 1];
 
   const stepCount = toSnapshots.length + 1;
   const totalDuration = stepDuration * (stepCount - 1);
@@ -114,8 +117,8 @@ const BlurText: React.FC<BlurTextProps> = ({
         return (
           <motion.span
             key={index}
-            initial={reduceMotion ? undefined : fromSnapshot}
-            animate={reduceMotion ? undefined : inView ? animateKeyframes : undefined}
+            initial={fromSnapshot}
+            animate={reduceMotion ? finalSnapshot : inView ? animateKeyframes : undefined}
             transition={reduceMotion ? { duration: 0 } : spanTransition}
             onAnimationComplete={index === elements.length - 1 ? onAnimationComplete : undefined}
             style={{
