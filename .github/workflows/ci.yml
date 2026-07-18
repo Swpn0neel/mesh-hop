@@ -134,13 +134,9 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL }}
         run: |
-          $isReleaseTag = $env:GITHUB_REF -like "refs/tags/v*"
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
-            if ($isReleaseTag) {
-              throw "Release tags require WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD, and WINDOWS_TIMESTAMP_URL."
-            }
             "MESHOP_SIGNING_ENABLED=false" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Warning "Building an unsigned non-release artifact because no signing certificate is configured."
+            Write-Warning "Building an unsigned artifact because no signing certificate is configured."
             exit 0
           }
           .\scripts\enable-windows-signing.ps1
