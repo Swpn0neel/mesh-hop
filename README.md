@@ -121,7 +121,3 @@ npm run test:public
 
 Read [SECURITY.md](SECURITY.md) before relying on MeshHop. In short: keep normal HTTPS certificate validation enabled, never accept a certificate warning from a public proxy, and treat public exits as untrusted intermediaries that can observe destination domains, timing, and volume.
 
-## Roadmap & change log
-
-- [IMPROVEMENT-PLAN.md](IMPROVEMENT-PLAN.md) — phased product/engineering plan (Windows-first).
-- [IMPROVEMENTS.md](IMPROVEMENTS.md) — what has been shipped from that plan (Phase A–E status).
