@@ -28,6 +28,7 @@ export function SiteHeader() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const frameRef = useRef<number | null>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const updateHeader = () => {
@@ -54,15 +55,21 @@ export function SiteHeader() {
     };
   }, []);
 
-  // Lock body scroll when mobile menu is open
   useEffect(() => {
-    if (mobileMenuOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
+    if (!mobileMenuOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!headerRef.current?.contains(event.target as Node)) setMobileMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileMenuOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.body.style.overflow = "";
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
     };
   }, [mobileMenuOpen]);
 
@@ -71,9 +78,10 @@ export function SiteHeader() {
   return (
     <div className="site-header-slot">
       <motion.header
-        initial={reduceMotion ? { opacity: 1 } : { opacity: 0 }}
+        ref={headerRef}
+        initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.6, ease: "easeOut" }}
+        transition={reduceMotion ? { duration: 0 } : { duration: 0.6, ease: "easeOut" }}
         className={`site-header shell${isScrolled ? " is-scrolled" : ""}${mobileMenuOpen ? " is-menu-open" : ""}`}
         aria-label="Primary navigation"
       >
@@ -114,23 +122,23 @@ export function SiteHeader() {
           className={`mobile-menu-toggle${mobileMenuOpen ? " is-active" : ""}`}
           type="button"
           aria-expanded={mobileMenuOpen}
-          aria-label="Toggle navigation menu"
+          aria-controls="mobile-navigation"
+          aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         >
           <span className="hamburger-line line-1" />
           <span className="hamburger-line line-2" />
           <span className="hamburger-line line-3" />
         </button>
-      </motion.header>
 
-      {/* Mobile Navigation Overlay */}
-      <div className={`mobile-nav-overlay${mobileMenuOpen ? " is-open" : ""}`} aria-hidden={!mobileMenuOpen}>
-        <nav className="mobile-nav" aria-label="Mobile navigation sections">
-          <a href="#process" onClick={() => setMobileMenuOpen(false)}>How it works</a>
-          <a href="#proof" onClick={() => setMobileMenuOpen(false)}>Measurements</a>
-          <a href="#safety" onClick={() => setMobileMenuOpen(false)}>Good to know</a>
-        </nav>
-      </div>
+        <div id="mobile-navigation" className={`mobile-nav-overlay${mobileMenuOpen ? " is-open" : ""}`} aria-hidden={!mobileMenuOpen}>
+          <nav className="mobile-nav" aria-label="Mobile navigation sections">
+            <a href="#process" tabIndex={mobileMenuOpen ? 0 : -1} onClick={() => setMobileMenuOpen(false)}>How it works</a>
+            <a href="#proof" tabIndex={mobileMenuOpen ? 0 : -1} onClick={() => setMobileMenuOpen(false)}>Measurements</a>
+            <a href="#safety" tabIndex={mobileMenuOpen ? 0 : -1} onClick={() => setMobileMenuOpen(false)}>Good to know</a>
+          </nav>
+        </div>
+      </motion.header>
     </div>
   );
 }
