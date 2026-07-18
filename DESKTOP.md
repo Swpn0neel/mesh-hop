@@ -7,13 +7,13 @@ The desktop package uses Tauri 2, a vanilla Vite frontend, and the existing Java
 For ordinary Windows installation, use the NSIS setup executable:
 
 ```text
-src-tauri/target/release/bundle/nsis/MeshHop_0.4.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/MeshHop_0.4.1_x64-setup.exe
 ```
 
 The MSI package is also available for managed or silent deployment:
 
 ```text
-src-tauri/target/release/bundle/msi/MeshHop_0.4.0_x64_en-US.msi
+src-tauri/target/release/bundle/msi/MeshHop_0.4.1_x64_en-US.msi
 ```
 
 Stable download aliases are published on GitHub Releases as `MeshHop-windows-x64-setup.exe` and `MeshHop-windows-x64.msi`.
