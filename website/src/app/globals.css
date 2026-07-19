@@ -2866,6 +2866,142 @@ ul {
   text-decoration-color: currentColor;
 }
 
+/* Unsupported operating system dialog */
+
+.download-support-dialog {
+  width: min(calc(100% - 32px), 480px);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.52);
+}
+
+.download-support-dialog::backdrop {
+  background: rgba(4, 6, 10, 0.76);
+  backdrop-filter: blur(5px);
+}
+
+.download-support-dialog[open] {
+  animation: support-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.download-support-dialog-content {
+  position: relative;
+  padding: 30px;
+  text-align: left;
+}
+
+.download-support-dialog-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  place-items: center;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.download-support-dialog-close:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink);
+}
+
+.download-support-dialog-close svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
+.download-support-dialog-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  place-items: center;
+  background: rgba(116, 130, 255, 0.14);
+  color: var(--violet-bright);
+}
+
+.download-support-dialog-icon svg {
+  width: 23px;
+  height: 23px;
+  fill: currentColor;
+}
+
+.download-support-dialog h2 {
+  max-width: 360px;
+  margin-top: 21px;
+  font-size: 1.5rem;
+  font-weight: 680;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+
+.download-support-dialog p {
+  max-width: 58ch;
+  margin-top: 13px;
+  color: var(--ink-soft);
+  font-size: var(--text-ui);
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.download-support-dialog .download-support-dialog-note {
+  color: var(--muted);
+}
+
+.download-support-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 27px;
+}
+
+.download-support-dialog-actions button {
+  min-width: 92px;
+  min-height: 42px;
+  padding: 0 17px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--violet);
+  color: #090b12;
+  font-weight: 680;
+  cursor: pointer;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.download-support-dialog-actions button:hover {
+  background: var(--violet-bright);
+}
+
+.download-support-dialog-actions button:active {
+  transform: translateY(1px);
+}
+
+@keyframes support-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .site-footer {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -3137,6 +3273,9 @@ ul {
     line-height: 1.45;
     text-align: center;
   }
+  .download-support-dialog-content { padding: 26px 22px 22px; }
+  .download-support-dialog h2 { padding-right: 22px; font-size: 1.35rem; }
+  .download-support-dialog-actions button { width: 100%; }
   .site-footer { grid-template-columns: 1fr auto; padding-inline: 18px; }
   .site-footer > div { flex-direction: column; gap: 3px; text-align: right; }
 }

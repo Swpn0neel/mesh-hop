@@ -8,6 +8,7 @@ import { MeasurementScoreboard } from "@/components/measurement-scoreboard";
 import { MeshHopWindow } from "@/components/meshhop-window";
 import { Pipeline } from "@/components/pipeline";
 import { SiteHeader } from "@/components/site-header";
+import { WindowsDownloadLink } from "@/components/windows-download-link";
 import { LATEST_RELEASE_URL, RELEASE_VERSION, WINDOWS_INSTALLER_URL } from "@/lib/release";
 import { motion, useReducedMotion } from "motion/react";
 
@@ -91,10 +92,10 @@ export default function Home() {
               animate={{ opacity: 1, y: 0 }}
               transition={reduceMotion ? { duration: 0 } : { delay: 0.38, duration: 0.55, ease: HERO_EASE }}
             >
-              <a className="button-primary" href={WINDOWS_INSTALLER_URL} download>
+              <WindowsDownloadLink className="button-primary" href={WINDOWS_INSTALLER_URL} download>
                 <DownloadIcon />
                 Download for Windows
-              </a>
+              </WindowsDownloadLink>
               <a className="button-secondary" href="#process">
                 <RouteIcon />
                 Watch the route
@@ -213,10 +214,10 @@ export default function Home() {
             <h2>Let the route prove itself.</h2>
             <p>Choose a region. Give MeshHop a minute to test the field. Open the browser only when the exit is earned.</p>
             <div className="download-actions">
-              <a className="button-primary large download-button" href={WINDOWS_INSTALLER_URL} download>
+              <WindowsDownloadLink className="button-primary large download-button" href={WINDOWS_INSTALLER_URL} download>
                 <DownloadIcon />
                 <span>Download MeshHop {RELEASE_VERSION}</span>
-              </a>
+              </WindowsDownloadLink>
             </div>
             <div className="download-detail">
               <span>Windows 10/11 · 64-bit</span>

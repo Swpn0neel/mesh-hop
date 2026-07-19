@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { GITHUB_REPOSITORY_URL, WINDOWS_INSTALLER_URL } from "@/lib/release";
+import { WindowsDownloadLink } from "@/components/windows-download-link";
 
 function DownloadArrow() {
   return (
@@ -107,7 +108,7 @@ export function SiteHeader() {
           >
             <GitHubIcon />
           </a>
-          <a
+          <WindowsDownloadLink
             className="nav-download"
             href={WINDOWS_INSTALLER_URL}
             download
@@ -115,7 +116,7 @@ export function SiteHeader() {
           >
             <span>Download</span>
             <DownloadArrow />
-          </a>
+          </WindowsDownloadLink>
         </div>
 
         <button
