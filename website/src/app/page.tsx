@@ -51,6 +51,26 @@ export default function Home() {
         <section className="hero-section" aria-labelledby="hero-title">
           <div className="hero-aura" aria-hidden="true" />
           <div className="hero-copy shell">
+            <motion.a
+              className="product-hunt-badge"
+              href="https://www.producthunt.com/products/meshhop?embed=true&utm_source=badge-featured&utm_medium=badge&utm_campaign=badge-meshhop"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="View MeshHop on Product Hunt (opens in a new tab)"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={reduceMotion ? { duration: 0 } : { delay: 0.04, duration: 0.45, ease: HERO_EASE }}
+            >
+              {/* Product Hunt badges are served as live widgets and should not be proxied by Next Image. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1201337&theme=dark&t=1784589337031"
+                alt="MeshHop — Discover, Measure, Verify, Route on Product Hunt"
+                width="250"
+                height="54"
+              />
+            </motion.a>
+            {/*
             <motion.div
               className="availability"
               initial={{ opacity: 0, y: 8 }}
@@ -59,6 +79,7 @@ export default function Home() {
             >
               <span />Windows desktop app · no account required
             </motion.div>
+            */}
             <h1 id="hero-title">
               <BlurText
                 text="A working exit, earned."

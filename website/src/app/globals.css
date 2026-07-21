@@ -454,6 +454,29 @@ ul {
   text-align: center;
 }
 
+.product-hunt-badge {
+  display: block;
+  width: clamp(220px, 25vw, 275px);
+  margin-bottom: 7px;
+  border-radius: 10px;
+  opacity: 0.84;
+  filter: saturate(0.72) brightness(0.94) drop-shadow(0 4px 7px rgba(108, 124, 255, 0.1));
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), filter 180ms ease, opacity 180ms ease;
+}
+
+.product-hunt-badge img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.product-hunt-badge:hover,
+.product-hunt-badge:focus-visible {
+  transform: translateY(-2px);
+  opacity: 1;
+  filter: saturate(0.9) brightness(1.02) drop-shadow(0 4px 7px rgba(108, 124, 255, 0.16));
+}
+
 .availability {
   display: inline-flex;
   align-items: center;
@@ -478,7 +501,7 @@ ul {
 
 .hero-copy h1 {
   max-width: 1040px;
-  margin-top: 25px;
+  margin-top: 16px;
   font-size: clamp(3.5rem, 7.2vw, 6rem);
   font-weight: 680;
   line-height: 0.98;
@@ -3180,7 +3203,7 @@ ul {
   .nav-download { min-width: 44px; padding: 0; justify-content: center; }
   .nav-download > span { display: none; }
   .availability { font-size: var(--text-caption); }
-  .hero-copy h1 { max-width: 390px; margin-top: 22px; }
+  .hero-copy h1 { max-width: 390px; margin-top: 16px; }
   .hero-kicker { margin-top: 23px; font-size: 16px; }
   .hero-actions { width: 100%; flex-direction: column; }
   .button-primary,
